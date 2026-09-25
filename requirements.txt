@@ -1,0 +1,7 @@
+# OBS Marker Tool
+# Runtime: Python 3.8+ (https://www.python.org/)
+# Note: Ensure "Add python.exe to PATH" is checked during Python installation.
+#
+# No external pip dependencies required.
+# All components run strictly on Python standard library modules:
+# os, sys, json, time, gc, stat, threading, datetime, pathlib, http.server, urllib.parse, shutil, subprocess

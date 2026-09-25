@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>OBS Markers</title>
+<style>
+  :root {
+    --bg: #101010;
+    --surface: #141416;
+    --border: #181819;
+    --border-bright: #26262b;
+    --accent: #162458;
+    --accent-hover: #1f347e;
+    --accent-border: #1f347e;
+    --text: #ffffff;
+    --text-dim: #8e8e93;
+    --text-muted: #55555c;
+    --freeze-flash: rgba(0, 210, 255, 0.85); /* Electric Cyan #00d2ff */
+    --red-undo: #ef4444;
+    --red-undo-bg: rgba(239, 68, 68, 0.25);
+    --red-undo-border: rgba(239, 68, 68, 0.6);
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    user-select: none;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    background-color: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+  }
+
+  body {
+    padding: 4px 5px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 4px;
+    border: 2px solid var(--border);
+    position: relative;
+  }
+
+  /* Full Frame Blue Freeze Flash Overlay (ONLY on F8/Keybind note freeze) */
+  .dock-freeze-layer {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    opacity: 0;
+    pointer-events: none;
+    background: var(--freeze-flash);
+    z-index: 9998;
+  }
+
+  /* UNIFIED ROW 1 (Height 22px): Clock Icon | Input with Badge | Save | Action */
+  .dock-row-unified {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    width: 100%;
+    flex-shrink: 0;
+  }
+
+  /* Clock Icon Button (Freeze / Re-grab Time) */
+  .btn-clock {
+    width: 22px;
+    height: 22px;
+    background-color: var(--accent);
+    color: #ffffff;
+    border: 1px solid var(--accent-border);
+    border-radius: 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+
+  .btn-clock:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+  }
+
+  .btn-clock.picked {
+    background-color: var(--accent);
+    border-color: #00d2ff;
+    color: #00d2ff;
+  }
+
+  .btn-clock:disabled {
+    background-color: var(--bg);
+    color: var(--text-muted);
+    border-color: #181819;
+    cursor: not-allowed;
+  }
+
+  .btn-clock svg {
+    pointer-events: none;
+  }
+
+  /* Input Field Container with Embedded Saved Counter Badge */
+  .input-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    transition: margin-left 0.15s ease;
+  }
+
+  .dock-input {
+    width: 100%;
+    height: 100%;
+    background: var(--surface);
+    border: 1px solid #202024;
+    border-radius: 3px;
+    color: #ffffff;
+    padding: 0 6px 0 6px; /* Stopped state: full width, no badge padding */
+    font-size: 10.5px;
+    outline: none;
+    text-overflow: ellipsis;
+    /* 500ms transition for green frame fade, matching the Undo button 1:1 */
+    transition: border-color 0.5s ease, box-shadow 0.5s ease, padding 0.15s ease;
+  }
+
+  .dock-input:focus {
+    border-color: var(--accent);
+  }
+
+  .dock-input:disabled {
+    background: #0d0d0e;
+    color: var(--text-muted);
+    cursor: not-allowed;
+    border-color: #181819;
+  }
+
+  /* Green Frame Feedback on Save (Muted Sage) */
+  .dock-input.state-saved {
+    border-color: #2e5c46 !important;
+    box-shadow: none !important;
+  }
+
+  .dock-input.state-saved::placeholder {
+    color: #5ea87f !important;
+  }
+
+  /* Counter Badge Inside Input (Hidden when stopped, shown ONLY when recording) */
+  .input-counter-badge {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 9.5px;
+    color: var(--text-muted);
+    pointer-events: none;
+    white-space: nowrap;
+    font-family: inherit;
+    display: none; /* Hidden by default when stopped */
+  }
+
+  /* RECORDING STATE MODIFIERS (-50% left padding & reduced margin) */
+  body.recording .input-wrap {
+    margin-left: -2px; /* -50% of left gap */
+  }
+
+  body.recording .dock-input {
+    padding: 0 32px 0 3px; /* -50% left padding (3px vs 6px), 32px right padding for compact Xmrks */
+  }
+
+  body.recording .input-counter-badge {
+    display: block; /* Visible ONLY when recording */
+  }
+
+  /* Save Button */
+  .btn-save {
+    background-color: var(--accent);
+    color: #ffffff;
+    border: none;
+    border-radius: 3px;
+    padding: 0 8px;
+    font-size: 10.5px;
+    font-weight: 600;
+    height: 100%;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+
+  .btn-save:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+  }
+
+  .btn-save:disabled {
+    background-color: var(--bg);
+    color: var(--text-muted);
+    border: 1px solid #181819;
+    cursor: not-allowed;
+  }
+
+  /* Action Button (X / Red Undo) with 500ms Crossfade */
+  .btn-action {
+    width: 22px;
+    height: 22px;
+    border-radius: 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border: none;
+    flex-shrink: 0;
+    position: relative;
+    transition: background 0.5s ease, border-color 0.5s ease, color 0.5s ease;
+  }
+
+  .btn-action svg {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+    pointer-events: none;
+  }
+
+  .btn-action.state-idle {
+    background-color: var(--bg);
+    color: var(--text-muted);
+    border: 1px solid #181819;
+    cursor: default;
+  }
+
+  .btn-action.state-active {
+    background-color: var(--accent);
+    color: #ffffff;
+    border: 1px solid var(--accent-border);
+    cursor: pointer;
+  }
+
+  .btn-action.state-undo {
+    background-color: var(--red-undo-bg);
+    color: var(--red-undo);
+    border: 1px solid var(--red-undo-border);
+    cursor: pointer;
+  }
+
+  .btn-action.state-undo:hover {
+    background-color: rgba(239, 68, 68, 0.4);
+    color: #ffffff;
+  }
+
+  /* ROW 2 (Height 18px): Presets + Morphing Adder ONLY (Clean, No Gear Icon) */
+  .dock-row-chips {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    height: 18px;
+    flex-shrink: 0;
+  }
+
+  .dock-row-chips::-webkit-scrollbar { display: none; }
+
+  .chip-container {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    height: 18px;
+  }
+
+  /* Tag Chip: Clean, no hover X, right-click deletes */
+  .dock-chip {
+    background: #161619;
+    border: 1px solid #222226;
+    color: #c7c7cc;
+    font-size: 9.5px;
+    font-weight: 500;
+    padding: 0 6px;
+    border-radius: 2px;
+    cursor: pointer;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 18px;
+    line-height: 18px;
+    box-sizing: border-box;
+    transition: all 0.12s ease;
+  }
+
+  .dock-chip:hover {
+    background: var(--accent);
+    color: #ffffff;
+    border-color: var(--accent-hover);
+  }
+
+  /* In-place morphing tag button / input */
+  .btn-tag-morph {
+    background: transparent;
+    border: 1px dashed #303038;
+    color: #71717a;
+    font-size: 9.5px;
+    padding: 0 5px;
+    border-radius: 2px;
+    cursor: pointer;
+    white-space: nowrap;
+    height: 18px;
+    line-height: 18px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .btn-tag-morph:hover {
+    color: #ffffff;
+    border-color: #60a5fa;
+  }
+
+  .input-tag-morph {
+    background: #0f0f12;
+    border: 1px solid #3b82f6;
+    color: #ffffff;
+    font-size: 9.5px;
+    padding: 0 4px;
+    border-radius: 2px;
+    width: 58px;
+    outline: none;
+    height: 18px;
+    line-height: 18px;
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+  <!-- Full Frame Blue Freeze Flash Layer (ONLY on Keybind Freeze) -->
+  <div class="dock-freeze-layer" id="dockFreezeOverlay"></div>
+
+  <!-- UNIFIED ROW 1 (22px): Clock Icon | Description Box with Counter Badge | Save | Action -->
+  <div class="dock-row-unified">
+    <!-- Clock Icon Button: Click to Freeze / Re-grab Time -->
+    <button class="btn-clock" id="btnClock" onclick="handleClockClick()" title="Freeze exact timecode" disabled>
+      <!-- Clock Plus Icon (Idle) -->
+      <svg id="iconClockPlus" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 6v6l3.644 1.822"/>
+        <path d="M16 19h6"/>
+        <path d="M19 16v6"/>
+        <path d="M21.92 13.267a10 10 0 1 0-8.653 8.653"/>
+      </svg>
+      <!-- Clock Check Icon (Picked / Frozen) -->
+      <svg id="iconClockCheck" style="display: none;" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.95 13a10 10 0 1 0-8.685 8.92"/>
+        <path d="M12 6v6l4 2"/>
+        <path d="m16 19 2 2 4-4"/>
+      </svg>
+    </button>
+
+    <!-- Input Box with Full-Width Stopped Placeholder & Dynamic Embedded Badge -->
+    <div class="input-wrap">
+      <input type="text" id="dockInput" class="dock-input" placeholder="Start rec to begin marking" title="Start recording in OBS to enable markers" autocomplete="off" disabled>
+      <span class="input-counter-badge" id="dockCounter"></span>
+    </div>
+
+    <!-- Save Button (Enabled only when text is entered) -->
+    <button class="btn-save" id="btnSave" onclick="handleSaveAction()" disabled>Save</button>
+
+    <!-- Contextual Action Button (X / Red Undo) -->
+    <button class="btn-action state-idle" id="btnAction" onclick="handleActionButtonClick()" title="Cancel / Undo">
+      <!-- X Icon -->
+      <svg id="iconX" style="opacity: 1;" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </svg>
+      <!-- Lucide Undo-2 SVG Icon -->
+      <svg id="iconUndo" style="opacity: 0;" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 14 4 9l5-5"/>
+        <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- ROW 2 (18px): Presets + Morphing Adder ONLY (No Gear Icon) -->
+  <div class="dock-row-chips" id="chipScrollRow">
+    <div class="chip-container" id="chipContainer"></div>
+    <div id="tagMorphWrap" style="flex-shrink: 0; height: 18px; display: flex; align-items: center;">
+      <button class="btn-tag-morph" id="btnTagMorph" onclick="morphToInput()">+ tag</button>
+    </div>
+  </div>
+
+<script>
+  // --- STATE ---
+  let isRecording = false;
+  let currentRecordingTimecode = "00:00:00";
+  let selectedTimestamp = null;
+  let savedMarkersCount = 0;
+  let undoTimer = null;
+  let savedStateTimer = null;
+  let isUndoActive = false;
+  let isSavedActive = false;
+  let obsSocket = null;
+  const WS_PORTS = [4456, 4455];
+  let portIndex = 0;
+  let lastKnownFreezeTime = 0;
+
+  // Presets in localStorage
+  let userPresets = JSON.parse(localStorage.getItem('obs_marker_chips_v5') || '["Ace", "Clutch", "Funny", "Dono", "Whiff"]');
+
+  // Horizontal wheel scroll for chips
+  const chipRow = document.getElementById('chipScrollRow');
+  chipRow.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    chipRow.scrollLeft += e.deltaY;
+  }, { passive: false });
+
+  // Update counter badge formatting ("Xmrks")
+  function updateMarkerCounter() {
+    const counterEl = document.getElementById('dockCounter');
+    if (!counterEl) return;
+    if (isRecording) {
+      counterEl.textContent = `${savedMarkersCount}mrks`;
+    } else {
+      counterEl.textContent = '';
+    }
+  }
+
+  // --- BLUE FREEZE FLASH (ONLY on Keybind Note Freeze) ---
+  // Electric Cyan #00d2ff (60ms attack / 1200ms decay / 85% opacity)
+  function triggerFreezeFlash() {
+    const overlay = document.getElementById('dockFreezeOverlay');
+    overlay.style.transition = 'opacity 60ms ease-in';
+    overlay.style.opacity = '0.85';
+
+    setTimeout(() => {
+      overlay.style.transition = 'opacity 1200ms ease-out';
+      overlay.style.opacity = '0';
+    }, 60);
+  }
+
+  // --- GREEN FRAME & "Saved!" GHOST TEXT FEEDBACK ON SAVE ---
+  // Stays for 5s, then 500ms fade back to normal, matching the Red Undo button 1:1
+  function triggerSavedInputFeedback() {
+    isSavedActive = true;
+    const input = document.getElementById('dockInput');
+    input.classList.add('state-saved');
+    input.placeholder = 'Saved!';
+
+    clearTimeout(savedStateTimer);
+    savedStateTimer = setTimeout(() => {
+      clearSavedInputFeedback();
+    }, 5000);
+  }
+
+  function clearSavedInputFeedback() {
+    clearTimeout(savedStateTimer);
+    isSavedActive = false;
+    const input = document.getElementById('dockInput');
+    input.classList.remove('state-saved');
+    if (isRecording) {
+      input.placeholder = 'Description...';
+    } else {
+      input.placeholder = 'Start rec to begin marking';
+    }
+  }
+
+  // --- CLOCK ICON BUTTON (CLICK IN UI) ---
+  // Clicking the UI clock button freezes the timestamp WITHOUT triggering the blue sensory flash
+  function handleClockClick() {
+    if (!isRecording) return;
+    applyFreezeState();
+  }
+
+  // --- KEYBIND FREEZE (F8 / IN-GAME GLOBAL HOTKEY) ---
+  // Keybind note trigger: fires the Electric Cyan #00d2ff blue sensory flash
+  function handleKeybindFreeze() {
+    if (!isRecording) return;
+    triggerFreezeFlash();
+    applyFreezeState();
+  }
+
+  function applyFreezeState() {
+    queryRecordStatus();
+    selectedTimestamp = currentRecordingTimecode;
+
+    const btn = document.getElementById('btnClock');
+    btn.classList.add('picked');
+    btn.title = `Time frozen: ${currentRecordingTimecode} (click to re-grab)`;
+
+    document.getElementById('iconClockPlus').style.display = 'none';
+    document.getElementById('iconClockCheck').style.display = 'block';
+
+    updateUIStates();
+
+    const input = document.getElementById('dockInput');
+    if (input && !input.disabled) {
+      input.focus();
+    }
+  }
+
+  function resetClockButton() {
+    selectedTimestamp = null;
+    const btn = document.getElementById('btnClock');
+    btn.classList.remove('picked');
+    btn.title = 'Freeze exact timecode';
+
+    document.getElementById('iconClockPlus').style.display = 'block';
+    document.getElementById('iconClockCheck').style.display = 'none';
+
+    updateUIStates();
+  }
+
+  // --- UI STATES (SAVE BUTTON & ACTION BUTTON) ---
+  function updateUIStates() {
+    const inputVal = document.getElementById('dockInput').value.trim();
+    const btnSave = document.getElementById('btnSave');
+
+    // Save button is ONLY enabled if actively recording AND input has non-empty text!
+    btnSave.disabled = (!isRecording || inputVal.length === 0);
+
+    if (isUndoActive) return;
+
+    const btn = document.getElementById('btnAction');
+    const hasContent = (inputVal.length > 0 || selectedTimestamp !== null);
+
+    document.getElementById('iconX').style.opacity = '1';
+    document.getElementById('iconUndo').style.opacity = '0';
+
+    btn.classList.remove('state-undo');
+    if (hasContent && isRecording) {
+      btn.className = 'btn-action state-active';
+    } else {
+      btn.className = 'btn-action state-idle';
+    }
+  }
+
+  function triggerUndoState() {
+    isUndoActive = true;
+    const btn = document.getElementById('btnAction');
+
+    // 500ms crossfade into Red Undo
+    document.getElementById('iconX').style.opacity = '0';
+    document.getElementById('iconUndo').style.opacity = '1';
+    btn.className = 'btn-action state-undo';
+
+    // Green frame on input + "Saved!" ghost text for 5s (fading 1:1 with Undo)
+    triggerSavedInputFeedback();
+
+    clearTimeout(undoTimer);
+    // Stays for 5s, then 500ms crossfade back to X and normal frame
+    undoTimer = setTimeout(() => {
+      isUndoActive = false;
+      clearSavedInputFeedback();
+      updateUIStates();
+    }, 5000);
+  }
+
+  function handleActionButtonClick() {
+    if (isUndoActive) {
+      clearTimeout(undoTimer);
+      isUndoActive = false;
+      clearSavedInputFeedback();
+
+      fetch("/api/undo_marker", { method: "POST" })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            savedMarkersCount = Math.max(0, data.count);
+            updateMarkerCounter();
+            updateUIStates();
+          }
+        })
+        .catch(() => {});
+
+      updateUIStates();
+      return;
+    }
+
+    const input = document.getElementById('dockInput');
+    input.value = '';
+    resetClockButton();
+  }
+
+  document.getElementById('dockInput').addEventListener('input', () => {
+    clearSavedInputFeedback();
+    updateUIStates();
+  });
+
+  document.getElementById('dockInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleSaveAction();
+    if (e.key === 'Escape') {
+      document.getElementById('dockInput').value = '';
+      resetClockButton();
+    }
+  });
+
+  // Physical F8 listener inside dock window
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'F8') {
+      e.preventDefault();
+      if (isRecording) {
+        handleKeybindFreeze();
+      }
+    }
+  });
+
+  // --- SAVE LOGIC ---
+  function handleSaveAction() {
+    if (!isRecording) return;
+    const input = document.getElementById('dockInput');
+    const desc = input.value.trim();
+    if (!desc) return; // Non-empty guard!
+
+    const timeToSave = selectedTimestamp || currentRecordingTimecode;
+
+    commitMarker(timeToSave, desc);
+
+    input.value = '';
+    resetClockButton();
+    updateUIStates();
+  }
+
+  function commitMarker(time, desc) {
+    // Green flash overlay removed: replaced with green frame on text field + Saved! placeholder
+    triggerUndoState();
+
+    fetch("/api/save_marker", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timecode: time, name: desc })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        savedMarkersCount = data.count || (savedMarkersCount + 1);
+        updateMarkerCounter();
+      }
+    })
+    .catch(err => {
+      console.error("Save error:", err);
+    });
+  }
+
+  // --- PRESETS & RIGHT CLICK DELETION ---
+  function renderChips() {
+    const container = document.getElementById('chipContainer');
+    container.innerHTML = '';
+
+    userPresets.forEach((tag, idx) => {
+      const chip = document.createElement('div');
+      chip.className = 'dock-chip';
+      chip.textContent = tag;
+      chip.title = `Left-click: save "${tag}" | Right-click: delete tag`;
+
+      chip.onclick = () => {
+        if (!isRecording) return;
+        const timeToSave = selectedTimestamp || currentRecordingTimecode;
+        commitMarker(timeToSave, tag);
+        resetClockButton();
+      };
+
+      chip.oncontextmenu = (e) => {
+        e.preventDefault();
+        deleteTag(idx);
+      };
+
+      container.appendChild(chip);
+    });
+
+    localStorage.setItem('obs_marker_chips_v5', JSON.stringify(userPresets));
+  }
+
+  function morphToInput() {
+    const wrap = document.getElementById('tagMorphWrap');
+    wrap.innerHTML = `<input type="text" id="morphInput" class="input-tag-morph" placeholder="Tag..." maxlength="10">`;
+    const input = document.getElementById('morphInput');
+    input.focus();
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const val = input.value.trim();
+        if (val && !userPresets.includes(val)) {
+          userPresets.push(val);
+          renderChips();
+        }
+        revertMorph();
+      } else if (e.key === 'Escape') {
+        revertMorph();
+      }
+    });
+
+    input.addEventListener('blur', () => {
+      setTimeout(revertMorph, 150);
+    });
+  }
+
+  function revertMorph() {
+    const wrap = document.getElementById('tagMorphWrap');
+    wrap.innerHTML = `<button class="btn-tag-morph" id="btnTagMorph" onclick="morphToInput()">+ tag</button>`;
+  }
+
+  function deleteTag(idx) {
+    userPresets.splice(idx, 1);
+    renderChips();
+  }
+
+  // --- OBS WEBSOCKET & RECORDING STATE ---
+  function setRecordingUIState(recording) {
+    isRecording = recording;
+    const btnClock = document.getElementById('btnClock');
+    const input = document.getElementById('dockInput');
+
+    if (recording) {
+      document.body.classList.add('recording');
+      btnClock.disabled = false;
+      input.disabled = false;
+      if (!isSavedActive) {
+        input.placeholder = 'Description...';
+      }
+      input.title = '';
+      updateMarkerCounter();
+    } else {
+      document.body.classList.remove('recording');
+      btnClock.disabled = true;
+      resetClockButton();
+      input.disabled = true;
+      input.value = '';
+      input.placeholder = 'Start rec to begin marking';
+      input.title = 'Start recording in OBS to enable markers';
+      clearSavedInputFeedback();
+      updateMarkerCounter();
+    }
+    updateUIStates();
+  }
+
+  function initObsWebSocket() {
+    const port = WS_PORTS[portIndex % WS_PORTS.length];
+    try {
+      obsSocket = new WebSocket(`ws://127.0.0.1:${port}`);
+
+      obsSocket.onopen = () => {
+        obsSocket.send(JSON.stringify({ op: 1, d: { rpcVersion: 1, eventSubscriptions: 65 } }));
+      };
+
+      obsSocket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.op === 2) {
+            queryRecordStatus();
+            queryRecordDirectory();
+          }
+          if (msg.op === 5 && msg.d.eventType === "RecordStateChanged") {
+            const active = !!msg.d.eventData.outputActive;
+            setRecordingUIState(active);
+            if (!active) {
+              fetch("/api/reset_session", { method: "POST" }).catch(() => {});
+              savedMarkersCount = 0;
+              updateMarkerCounter();
+            } else {
+              queryRecordDirectory();
+            }
+          }
+          if (msg.op === 7 && msg.d.requestType === "GetRecordStatus" && msg.d.responseData) {
+            const active = msg.d.responseData.outputActive;
+            if (isRecording !== active) {
+              setRecordingUIState(active);
+            }
+            if (active && msg.d.responseData.outputTimecode) {
+              currentRecordingTimecode = msg.d.responseData.outputTimecode.split(".")[0];
+            }
+          }
+          if (msg.op === 7 && msg.d.requestType === "GetRecordDirectory" && msg.d.responseData) {
+            const dir = msg.d.responseData.recordDirectory;
+            if (dir) {
+              fetch("/api/config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ recording_dir: dir })
+              }).catch(() => {});
+            }
+          }
+        } catch (e) {}
+      };
+
+      obsSocket.onclose = () => {
+        setRecordingUIState(false);
+        portIndex++;
+        setTimeout(initObsWebSocket, 2000);
+      };
+
+      obsSocket.onerror = () => {
+        obsSocket.close();
+      };
+    } catch (e) {
+      portIndex++;
+      setTimeout(initObsWebSocket, 2000);
+    }
+  }
+
+  function queryRecordStatus() {
+    if (obsSocket && obsSocket.readyState === WebSocket.OPEN) {
+      obsSocket.send(JSON.stringify({
+        op: 6,
+        d: { requestType: "GetRecordStatus", requestId: "req_rec_status" }
+      }));
+    }
+  }
+
+  function queryRecordDirectory() {
+    if (obsSocket && obsSocket.readyState === WebSocket.OPEN) {
+      obsSocket.send(JSON.stringify({
+        op: 6,
+        d: { requestType: "GetRecordDirectory", requestId: "req_rec_dir" }
+      }));
+    }
+  }
+
+  setInterval(queryRecordStatus, 1000);
+
+  // --- HIGH-FREQUENCY STATUS & GLOBAL HOTKEY SYNC ---
+  function pollServerSync() {
+    fetch("/api/status")
+      .then(res => res.json())
+      .then(data => {
+        if (typeof data.markers_count === "number") {
+          savedMarkersCount = Math.max(0, data.markers_count);
+          updateMarkerCounter();
+          updateUIStates();
+        }
+
+        // Global hotkey trigger detection
+        if (data.freeze_event && data.freeze_event > lastKnownFreezeTime) {
+          if (lastKnownFreezeTime > 0 && isRecording) {
+            handleKeybindFreeze();
+          }
+          lastKnownFreezeTime = data.freeze_event;
+        }
+      })
+      .catch(() => {});
+  }
+
+  // Poll at 150ms for responsive global in-game hotkey detection
+  setInterval(pollServerSync, 150);
+
+  // Init
+  renderChips();
+  initObsWebSocket();
+  pollServerSync();
+</script>
+</body>
+</html>

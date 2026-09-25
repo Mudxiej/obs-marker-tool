@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: OBS Marker Tool Documentation & Wiki
+    url: https://github.com/Mudxiej/obs-marker-tool/wiki
+    about: Read comprehensive guides on installation, NLE import workflows, and internal architecture.
+  - name: Ask a Question or Discuss Ideas
+    url: https://github.com/Mudxiej/obs-marker-tool/discussions
+    about: Join community discussions to ask questions or share setup tips.

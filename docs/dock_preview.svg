@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 150" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0e1217"/>
+      <stop offset="100%" stop-color="#080a0e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Full-width dark canvas (height 150) -->
+  <rect width="880" height="150" rx="8" fill="url(#bgGrad)" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Dock body: centered at y=21, height=108 (perfect 10px top/bottom padding) -->
+  <rect x="196" y="21" width="488" height="108" rx="6" fill="#101010" stroke="#181819" stroke-width="4"/>
+
+  <!-- === ROW 1 (44px@2x, y=31, top margin=10px) === -->
+  <g transform="translate(206, 31)">
+
+    <!-- Clock button: 44x44@2x, bg #162458, border 2px solid #00d2ff -->
+    <rect width="44" height="44" rx="6" fill="#162458" stroke="#00d2ff" stroke-width="2"/>
+    <g transform="translate(9, 9) scale(1.08)" stroke="#00d2ff" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21.95 13a10 10 0 1 0-8.685 8.92"/>
+      <path d="M12 6v6l4 2"/>
+      <path d="m16 19 2 2 4-4"/>
+    </g>
+
+    <!-- Input: 290x44, bg #141416, border 2px solid #2e5c46 (saved state) -->
+    <rect x="52" width="290" height="44" rx="6" fill="#141416" stroke="#2e5c46" stroke-width="2"/>
+    <!-- "Saved!" placeholder LEFT-aligned, color #5ea87f, font 21px -->
+    <text x="60" y="23" fill="#5ea87f" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="21" font-weight="500" dominant-baseline="central">Saved!</text>
+    <!-- Counter badge: font 19px, color #55555c, right edge -->
+    <text x="332" y="23" fill="#55555c" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="600" text-anchor="end" dominant-baseline="central">3mrks</text>
+
+    <!-- Save button: bg #162458, no border, 66x44 -->
+    <rect x="350" width="66" height="44" rx="6" fill="#162458"/>
+    <text x="383" y="23" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="21" font-weight="600" text-anchor="middle" dominant-baseline="central">Save</text>
+
+    <!-- Undo button: 44x44, bg #3c1111, border 2px solid rgba(239,68,68,0.6) -->
+    <rect x="424" width="44" height="44" rx="6" fill="#3c1111" stroke="#ef4444" stroke-width="2" stroke-opacity="0.6"/>
+    <g transform="translate(434, 12) scale(0.82)" stroke="#ef4444" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 14 4 9l5-5"/>
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>
+    </g>
+  </g>
+
+  <!-- === ROW 2 (36px@2x, y=83, bottom margin=10px) === -->
+  <g transform="translate(206, 83)">
+
+    <!-- Left-adjusted streamer chips -->
+    <!-- Ace -->
+    <rect x="0" width="48" height="36" rx="4" fill="#161619" stroke="#222226" stroke-width="2"/>
+    <text x="24" y="18" fill="#c7c7cc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="500" text-anchor="middle" dominant-baseline="central">Ace</text>
+
+    <!-- Clutch -->
+    <rect x="54" width="68" height="36" rx="4" fill="#161619" stroke="#222226" stroke-width="2"/>
+    <text x="88" y="18" fill="#c7c7cc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="500" text-anchor="middle" dominant-baseline="central">Clutch</text>
+
+    <!-- Funny -->
+    <rect x="128" width="64" height="36" rx="4" fill="#161619" stroke="#222226" stroke-width="2"/>
+    <text x="160" y="18" fill="#c7c7cc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="500" text-anchor="middle" dominant-baseline="central">Funny</text>
+
+    <!-- Dono -->
+    <rect x="198" width="60" height="36" rx="4" fill="#161619" stroke="#222226" stroke-width="2"/>
+    <text x="228" y="18" fill="#c7c7cc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="500" text-anchor="middle" dominant-baseline="central">Dono</text>
+
+    <!-- Whiff -->
+    <rect x="264" width="60" height="36" rx="4" fill="#161619" stroke="#222226" stroke-width="2"/>
+    <text x="294" y="18" fill="#c7c7cc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="500" text-anchor="middle" dominant-baseline="central">Whiff</text>
+
+    <!-- Right-adjusted + tag (flush with right edge at 468, compact 56px width, no ghost margins) -->
+    <rect x="412" width="56" height="36" rx="4" fill="none" stroke="#303038" stroke-width="2" stroke-dasharray="5,4"/>
+    <text x="440" y="18" fill="#71717a" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="500" text-anchor="middle" dominant-baseline="central">+ tag</text>
+  </g>
+</svg>

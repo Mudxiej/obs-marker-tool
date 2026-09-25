@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local Runtime & Transient State
+crash.log
+*.flag
+freeze_trigger.flag
+
+# User Configuration & Test Sessions
+config.json
+Markers_*
+*.zip
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+ehthumbs.db
