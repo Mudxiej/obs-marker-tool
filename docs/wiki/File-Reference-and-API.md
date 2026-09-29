@@ -16,7 +16,7 @@ Comprehensive technical specification of all repository files, internal data str
 | `src/run.bat` | Windows Batch Script | Interactive launcher for local development, manual testing, and live terminal logging. |
 | `src/stop.bat` | Windows Batch Script | Process termination script safely querying port 8765 and killing the daemon on OBS unload. |
 | `scripts/sync_wiki.py` | Python 3.8+ | Synchronization utility reading Windows Credential Manager tokens to push `docs/wiki/` directly to GitHub Wiki git remote. |
-| `requirements.txt` | Text / Config | Developer dependencies for local testing, syntax linting, and XML validation (zero runtime requirements). |
+| `requirements.txt` | Text / Config | Zero runtime requirements (stdlib only). No dev dependencies pinned. |
 
 ---
 
@@ -41,15 +41,13 @@ Silent background daemon listening on `127.0.0.1:8765` using Python standard lib
   - `undo_last_marker()`: Removes the latest marker. If marker count drops to zero, invokes `cleanup_session_files()`.
   - `reset_session()`: Finalizes current session state when OBS stops recording.
   - `flush_files()`: Simultaneously writes TXT, CSV, Premiere XML, and FCPXML files.
-  - `generate_txt()`: Produces YouTube chapter list with auto-prepended `00:00:00 - Intro`.
-  - `generate_csv()`: Writes RFC 4180 compliant CSV marker records.
-  - `generate_xml()`: Builds FCP 7 XML sequence with native `<marker>` elements for Premiere Pro.
-  - `generate_fcpxml()`: Builds Final Cut Pro XML v1.9 sequence with native `<marker>` tags.
+  - XML names are escaped with `xml.sax.saxutils.escape` so `&`, `<`, `>` and quotes cannot break NLE imports.
+  - `parse_timecode()`: Parses `HH:MM:SS[.ms]`, `MM:SS[.ms]`, `SS[.ms]` and `HH:MM:SS:FF` into seconds + 60fps frames.
   - `cleanup_session_files()`: Resilient 4-phase deletion routine (force `gc.collect()`, strip read-only attributes, unlink files, remove folder).
 - `flag_watcher()`:
   - Background daemon thread executing every 40ms (`time.sleep(0.04)`) to capture Lua hotkey signals.
 - `ResilientHTTPServer`:
-  - `HTTPServer` subclass setting `allow_reuse_address = True` to prevent socket binding errors during rapid restarts.
+  - `ThreadingHTTPServer` subclass setting `allow_reuse_address = True` and `daemon_threads = True` to prevent socket binding errors and handle concurrent dock polls.
 - `MarkerRequestHandler`:
   - `do_GET()`: Dispatches `/api/status` requests with JSON state payload.
   - `do_POST()`: Dispatches `/api/save_marker`, `/api/undo_marker`, `/api/reset_session`, `/api/config`, and `/api/open_folder`.
@@ -107,7 +105,7 @@ Ultra-compact (40px total height) Chromium Embedded Framework UI embedded inside
   - Row 2 (18px): Scrollable preset chips container (`Ace`, `Clutch`, `Funny`, `Dono`, `Whiff`) and in-place `+ tag` adder.
 - Sensory Feedback Design:
   - Electric Cyan (`#00d2ff`): High-luminance peripheral screen flash triggering exclusively on global hotkey press.
-  - Muted Sage (`#22c55e`): Low-contrast border highlight and ghost text on successful marker save to prevent dark-room glare.
+  - Muted Sage (`#2e5c46` border, `#5ea87f` placeholder): Low-contrast border highlight and ghost text on successful marker save to prevent dark-room glare.
   - Red Undo Badge: 5-second countdown timer on Action button permitting instant rollback.
 
 #### WebSocket v5 & REST State Machine

@@ -14,14 +14,34 @@ import stat
 import threading
 from datetime import datetime
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from xml.sax.saxutils import escape as xml_escape
 import urllib.parse
 import shutil
 import subprocess
 
 PORT = 8765
 SCRIPT_DIR = Path(__file__).parent.resolve()
-DESKTOP_DIR = Path(os.path.expanduser("~")) / "Desktop"
+
+
+def _resolve_desktop_dir():
+    home = Path(os.path.expanduser("~"))
+    candidates = [
+        home / "Desktop",
+        home / "OneDrive" / "Desktop",
+        home / "Videos",
+        home,
+    ]
+    for c in candidates:
+        try:
+            if c.is_dir():
+                return c
+        except Exception:
+            continue
+    return home
+
+
+DESKTOP_DIR = _resolve_desktop_dir()
 CONFIG_FILE = SCRIPT_DIR / "config.json"
 FLAG_FILE = SCRIPT_DIR / "freeze_trigger.flag"
 
@@ -87,7 +107,15 @@ class MarkerSession:
             self.session_id = now_str
             folder_name = f"Markers_{now_str}"
             base_dir = self.get_base_dir()
-            self.folder_path = base_dir / folder_name
+            # Avoid folder collision when two sessions start within the same second
+            candidate = base_dir / folder_name
+            suffix = 1
+            while candidate.exists():
+                suffix += 1
+                candidate = base_dir / f"{folder_name}_{suffix}"
+                if suffix > 100:
+                    break
+            self.folder_path = candidate
             self.txt_path = self.folder_path / "markers.txt"
             self.csv_path = self.folder_path / "markers.csv"
             self.xml_path = self.folder_path / "premiere_sequence.xml"
@@ -95,20 +123,41 @@ class MarkerSession:
             self.files_created = False
             self.markers = []
 
+    @staticmethod
+    def parse_timecode(timecode):
+        """Parse HH:MM:SS[.ms], MM:SS[.ms], SS[.ms] and HH:MM:SS:FF.
+
+        Returns (total_seconds: float, frame_in: int at 60fps).
+        Raises ValueError on unparseable input.
+        """
+        tc = (timecode or "").strip()
+        if not tc:
+            raise ValueError("empty timecode")
+        parts = tc.split(":")
+        if len(parts) == 4:
+            # HH:MM:SS:FF — frames at 60fps
+            h, m, s = int(parts[0]), int(parts[1]), float(parts[2])
+            f = int(float(parts[3]))
+            total_seconds = h * 3600 + m * 60 + s + f / 60.0
+        elif len(parts) == 3:
+            h, m, s = int(parts[0]), int(parts[1]), float(parts[2])
+            total_seconds = h * 3600 + m * 60 + s
+        elif len(parts) == 2:
+            h, m, s = 0, int(parts[0]), float(parts[1])
+            total_seconds = h * 3600 + m * 60 + s
+        elif len(parts) == 1:
+            total_seconds = float(parts[0])
+        else:
+            raise ValueError(f"unsupported timecode: {timecode!r}")
+        frame_in = int(round(total_seconds * 60))
+        return total_seconds, frame_in
+
     def add_marker(self, timecode, name):
         self.start_new_session_if_needed()
         display_name = name.strip() if name and name.strip() else f"Marker {len(self.markers) + 1}"
 
         try:
-            parts = timecode.split(":")
-            if len(parts) == 3:
-                h, m, s = int(parts[0]), int(parts[1]), float(parts[2])
-            elif len(parts) == 2:
-                h, m, s = 0, int(parts[0]), float(parts[1])
-            else:
-                h, m, s = 0, 0, float(parts[0])
-            total_seconds = h * 3600 + m * 60 + s
-            frame_in = int(total_seconds * 60)
+            total_seconds, frame_in = self.parse_timecode(timecode)
         except Exception:
             total_seconds = 0
             frame_in = 0
@@ -155,9 +204,18 @@ class MarkerSession:
         # 2. Premiere Pro CSV Export
         csv_rows = ["Marker Name,Description,In,Out,Duration"]
         for m in self.markers:
-            tc = m['timecode']
-            if len(tc.split(":")) == 2:
+            tc = (m['timecode'] or "").strip()
+            # Normalize to HH:MM:SS for CSV; strip frame suffix if present
+            parts = tc.split(":")
+            if len(parts) == 2:
                 tc = "00:" + tc
+            elif len(parts) == 4:
+                tc = ":".join(parts[:3])
+            elif len(parts) == 1:
+                tc = f"00:00:{parts[0]}"
+            # Strip milliseconds (00:01:23.456 -> 00:01:23)
+            if "." in tc:
+                tc = tc.split(".")[0]
             tc_frames = f"{tc}:00"
             safe_name = m['name'].replace('"', '""')
             csv_rows.append(f'"{safe_name}","{safe_name}",{tc_frames},{tc_frames},00:00:00:00')
@@ -182,10 +240,12 @@ class MarkerSession:
         ]
 
         for m in self.markers:
+            safe_name = xml_escape(m["name"])
+            safe_tc = xml_escape(m["timecode"])
             xml_lines.extend([
                 '          <marker>',
-                f'            <name>{m["name"]}</name>',
-                f'            <comment>{m["timecode"]}</comment>',
+                f'            <name>{safe_name}</name>',
+                f'            <comment>{safe_tc}</comment>',
                 f'            <in>{m["frame_in"]}</in>',
                 f'            <out>{m["frame_in"]}</out>',
                 '          </marker>'
@@ -225,8 +285,9 @@ class MarkerSession:
         ])
 
         for m in self.markers:
+            safe_attr = xml_escape(m["name"], {'"': '&quot;'})
             fcpxml_lines.append(
-                f'              <marker start="{m["frame_in"]}/60s" duration="1/60s" value="{m["name"]}"/>'
+                f'              <marker start="{m["frame_in"]}/60s" duration="1/60s" value="{safe_attr}"/>'
             )
 
         fcpxml_lines.extend([
@@ -460,10 +521,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/config":
             try:
                 payload = json.loads(body.decode("utf-8")) if body else {}
-                if "recording_dir" in payload and payload["recording_dir"]:
-                    session.recording_dir = payload["recording_dir"]
+                if "recording_dir" in payload:
+                    rec = payload["recording_dir"]
+                    if isinstance(rec, str):
+                        rec = rec.strip()
+                        session.recording_dir = rec if rec else None
+                    elif rec is None:
+                        session.recording_dir = None
                 if "custom_output_dir" in payload:
-                    val = payload["custom_output_dir"].strip()
+                    raw = payload["custom_output_dir"]
+                    val = raw.strip() if isinstance(raw, str) else ""
                     session.custom_output_dir = val if val else None
                     try:
                         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -501,8 +568,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-class ResilientHTTPServer(HTTPServer):
+class ResilientHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
+    daemon_threads = True
 
     def handle_error(self, request, client_address):
         import traceback
