@@ -97,6 +97,8 @@ class MarkerSession:
         self.recording_dir = None
         self.custom_output_dir = None
         self.last_freeze_time = 0.0
+        self.fps_num = 60
+        self.fps_den = 1
         self.load_config()
 
     def load_config(self):
@@ -106,8 +108,47 @@ class MarkerSession:
                     data = json.load(f)
                     val = data.get("custom_output_dir", "")
                     self.custom_output_dir = val.strip() if val and val.strip() else None
+                    try:
+                        num = int(data.get("fps_num", 60))
+                        den = int(data.get("fps_den", 1))
+                        if 1 <= num <= 240 and 1 <= den <= 10000:
+                            self.fps_num, self.fps_den = num, den
+                    except Exception:
+                        pass
             except Exception:
                 pass
+
+    def save_config(self):
+        try:
+            data = {}
+            if CONFIG_FILE.exists():
+                try:
+                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if not isinstance(data, dict):
+                            data = {}
+                except Exception:
+                    data = {}
+            data["custom_output_dir"] = self.custom_output_dir or ""
+            data["fps_num"] = self.fps_num
+            data["fps_den"] = self.fps_den
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    def get_fps_float(self):
+        try:
+            return self.fps_num / self.fps_den
+        except Exception:
+            return 60.0
+
+    def get_timebase(self):
+        return int(round(self.get_fps_float()))
+
+    def is_ntsc(self):
+        # NTSC drop-frame family uses 1001 denominator (60000/1001, 30000/1001)
+        return self.fps_den == 1001
 
     def get_base_dir(self):
         self.load_config()
@@ -163,21 +204,27 @@ class MarkerSession:
             self.markers = []
 
     @staticmethod
-    def parse_timecode(timecode):
+    def parse_timecode(timecode, fps=60.0):
         """Parse HH:MM:SS[.ms], MM:SS[.ms], SS[.ms] and HH:MM:SS:FF.
 
-        Returns (total_seconds: float, frame_in: int at 60fps).
+        Returns (total_seconds: float, frame_in: int at given fps).
         Raises ValueError on unparseable input.
         """
+        try:
+            fps_f = float(fps)
+            if not (1 <= fps_f <= 240):
+                fps_f = 60.0
+        except Exception:
+            fps_f = 60.0
         tc = (timecode or "").strip()
         if not tc:
             raise ValueError("empty timecode")
         parts = tc.split(":")
         if len(parts) == 4:
-            # HH:MM:SS:FF — frames at 60fps
+            # HH:MM:SS:FF — frames at given fps
             h, m, s = int(parts[0]), int(parts[1]), float(parts[2])
             f = int(float(parts[3]))
-            total_seconds = h * 3600 + m * 60 + s + f / 60.0
+            total_seconds = h * 3600 + m * 60 + s + f / fps_f
         elif len(parts) == 3:
             h, m, s = int(parts[0]), int(parts[1]), float(parts[2])
             total_seconds = h * 3600 + m * 60 + s
@@ -188,7 +235,7 @@ class MarkerSession:
             total_seconds = float(parts[0])
         else:
             raise ValueError(f"unsupported timecode: {timecode!r}")
-        frame_in = int(round(total_seconds * 60))
+        frame_in = int(round(total_seconds * fps_f))
         return total_seconds, frame_in
 
     def add_marker(self, timecode, name):
@@ -196,7 +243,7 @@ class MarkerSession:
         display_name = name.strip() if name and name.strip() else f"Marker {len(self.markers) + 1}"
 
         try:
-            total_seconds, frame_in = self.parse_timecode(timecode)
+            total_seconds, frame_in = self.parse_timecode(timecode, self.get_fps_float())
         except Exception:
             total_seconds = 0
             frame_in = 0
@@ -226,6 +273,10 @@ class MarkerSession:
         if not self.folder_path.exists():
             self.folder_path.mkdir(parents=True, exist_ok=True)
 
+        fps_f = self.get_fps_float()
+        timebase = self.get_timebase()
+        ntsc_str = "TRUE" if self.is_ntsc() else "FALSE"
+
         # 1. Human TXT Export (YouTube Chapters compliant: auto-prepends 00:00:00 - Intro)
         txt_content = [
             f"# OBS Recording Markers - {self.session_id}",
@@ -239,7 +290,7 @@ class MarkerSession:
 
         atomic_write_text(self.txt_path, "\n".join(txt_content) + "\n")
 
-        # 2. Premiere Pro CSV Export
+        # 2. Premiere Pro CSV Export (HH:MM:SS:FF at detected fps)
         csv_rows = ["Marker Name,Description,In,Out,Duration"]
         for m in self.markers:
             tc = (m['timecode'] or "").strip()
@@ -251,10 +302,22 @@ class MarkerSession:
                 tc = ":".join(parts[:3])
             elif len(parts) == 1:
                 tc = f"00:00:{parts[0]}"
-            # Strip milliseconds (00:01:23.456 -> 00:01:23)
+            # Frames from fractional seconds at detected fps (00:01:23.456 -> :27 at 60fps)
+            ff = 0
             if "." in tc:
+                try:
+                    frac = float("0." + tc.split(".")[1].rstrip("s"))
+                    ff = int(round(frac * fps_f)) % max(timebase, 1)
+                except Exception:
+                    ff = 0
                 tc = tc.split(".")[0]
-            tc_frames = f"{tc}:00"
+            else:
+                # Reuse stored seconds for exact FF when timecode lacks ms
+                try:
+                    ff = int(round((float(m.get("seconds", 0)) % 1) * fps_f)) % max(timebase, 1)
+                except Exception:
+                    ff = 0
+            tc_frames = f"{tc}:{ff:02d}"
             safe_name = m['name'].replace('"', '""')
             csv_rows.append(f'"{safe_name}","{safe_name}",{tc_frames},{tc_frames},00:00:00:00')
 
@@ -268,8 +331,8 @@ class MarkerSession:
             '  <sequence>',
             f'    <name>Markers_{self.session_id}</name>',
             '    <rate>',
-            '      <timebase>60</timebase>',
-            '      <ntsc>FALSE</ntsc>',
+            f'      <timebase>{timebase}</timebase>',
+            f'      <ntsc>{ntsc_str}</ntsc>',
             '    </rate>',
             '    <media>',
             '      <video>',
@@ -299,12 +362,13 @@ class MarkerSession:
         atomic_write_text(self.xml_path, "\n".join(xml_lines) + "\n")
 
         # 4. Final Cut Pro FCPXML Export
+        fps_label = f"{fps_f:.2f}".rstrip("0").rstrip(".")
         fcpxml_lines = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             '<!DOCTYPE fcpxml>',
             '<fcpxml version="1.9">',
             '  <resources>',
-            '    <format id="r1" name="FFVideoFormat1080p60" frameDuration="1/60s" width="1920" height="1080"/>',
+            f'    <format id="r1" name="FFVideoFormat{fps_label}p" frameDuration="{self.fps_den}/{self.fps_num}s" width="1920" height="1080"/>',
             '  </resources>',
             '  <library>',
             f'    <event name="Event_{self.session_id}">',
@@ -314,16 +378,16 @@ class MarkerSession:
         ]
 
         max_sec = max([m['seconds'] for m in self.markers], default=60) + 10
-        total_fcpxml_frames = int(max_sec * 60)
+        total_fcpxml_frames = int(round(max_sec * fps_f))
 
         fcpxml_lines.extend([
-            f'            <gap name="Timeline" offset="0s" duration="{total_fcpxml_frames}/60s" start="0s">'
+            f'            <gap name="Timeline" offset="0s" duration="{total_fcpxml_frames}/{timebase}s" start="0s">'
         ])
 
         for m in self.markers:
             safe_attr = xml_escape(m["name"], {'"': '&quot;'})
             fcpxml_lines.append(
-                f'              <marker start="{m["frame_in"]}/60s" duration="1/60s" value="{safe_attr}"/>'
+                f'              <marker start="{m["frame_in"]}/{timebase}s" duration="1/{timebase}s" value="{safe_attr}"/>'
             )
 
         fcpxml_lines.extend([
@@ -494,14 +558,20 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "base_dir": str(session.get_base_dir()),
                 "recording_dir": str(session.recording_dir) if session.recording_dir else None,
                 "custom_output_dir": str(session.custom_output_dir) if session.custom_output_dir else None,
-                "freeze_event": session.last_freeze_time
+                "freeze_event": session.last_freeze_time,
+                "fps_num": session.fps_num,
+                "fps_den": session.fps_den,
+                "fps": session.get_fps_float()
             }
             self.send_json(data)
         elif parsed.path == "/api/config":
             self.send_json({
                 "custom_output_dir": session.custom_output_dir,
                 "recording_dir": session.recording_dir,
-                "base_dir": str(session.get_base_dir())
+                "base_dir": str(session.get_base_dir()),
+                "fps_num": session.fps_num,
+                "fps_den": session.fps_den,
+                "fps": session.get_fps_float()
             })
         elif parsed.path == "/api/open_folder":
             target = session.folder_path if (session.folder_path and session.folder_path.exists()) else session.get_base_dir()
@@ -567,16 +637,24 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raw = payload["custom_output_dir"]
                     val = raw.strip() if isinstance(raw, str) else ""
                     session.custom_output_dir = val if val else None
+                    session.save_config()
+                if "fps_num" in payload or "fps_den" in payload:
                     try:
-                        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                            json.dump({"custom_output_dir": session.custom_output_dir or ""}, f)
+                        num = int(payload.get("fps_num", session.fps_num))
+                        den = int(payload.get("fps_den", session.fps_den))
+                        if 1 <= num <= 240 and 1 <= den <= 10000:
+                            session.fps_num, session.fps_den = num, den
+                            session.save_config()
                     except Exception:
                         pass
                 self.send_json({
                     "success": True,
                     "recording_dir": session.recording_dir,
                     "custom_output_dir": session.custom_output_dir,
-                    "base_dir": str(session.get_base_dir())
+                    "base_dir": str(session.get_base_dir()),
+                    "fps_num": session.fps_num,
+                    "fps_den": session.fps_den,
+                    "fps": session.get_fps_float()
                 })
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)

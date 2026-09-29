@@ -420,6 +420,23 @@
   let lastFreezeHandledAt = 0;
   let pendingFreeze = false;
   let wsAuthRequired = false;
+  let currentFpsNum = 60;
+  let currentFpsDen = 1;
+
+  function fpsLabel() {
+    const f = currentFpsNum / currentFpsDen;
+    return (Math.round(f * 100) / 100).toString();
+  }
+
+  function updateFpsTooltip() {
+    const btn = document.getElementById('btnClock');
+    if (!btn) return;
+    if (selectedTimestamp) {
+      btn.title = `Time frozen: ${selectedTimestamp} @${fpsLabel()}fps (click to re-grab)`;
+    } else {
+      btn.title = `Freeze exact timecode @${fpsLabel()}fps`;
+    }
+  }
 
   // Presets in localStorage
   let userPresets = JSON.parse(localStorage.getItem('obs_marker_chips_v5') || '["Ace", "Clutch", "Funny", "Dono", "Whiff"]');
@@ -509,11 +526,11 @@
 
     const btn = document.getElementById('btnClock');
     btn.classList.add('picked');
-    btn.title = `Time frozen: ${currentRecordingTimecode} (click to re-grab)`;
 
     document.getElementById('iconClockPlus').style.display = 'none';
     document.getElementById('iconClockCheck').style.display = 'block';
 
+    updateFpsTooltip();
     updateUIStates();
 
     const input = document.getElementById('dockInput');
@@ -529,7 +546,7 @@
     selectedTimestamp = timecode;
     const btn = document.getElementById('btnClock');
     btn.classList.add('picked');
-    btn.title = `Time frozen: ${timecode} (click to re-grab)`;
+    updateFpsTooltip();
     updateUIStates();
   }
 
@@ -537,11 +554,11 @@
     selectedTimestamp = null;
     const btn = document.getElementById('btnClock');
     btn.classList.remove('picked');
-    btn.title = 'Freeze exact timecode';
 
     document.getElementById('iconClockPlus').style.display = 'block';
     document.getElementById('iconClockCheck').style.display = 'none';
 
+    updateFpsTooltip();
     updateUIStates();
   }
 
@@ -803,6 +820,7 @@
           if (msg.op === 2) {
             queryRecordStatus();
             queryRecordDirectory();
+            queryVideoSettings();
           }
           if (msg.op === 5 && msg.d.eventType === "RecordStateChanged") {
             const active = !!msg.d.eventData.outputActive;
@@ -813,6 +831,7 @@
               updateMarkerCounter();
             } else {
               queryRecordDirectory();
+              queryVideoSettings();
             }
           }
           if (msg.op === 7 && msg.d.requestType === "GetRecordStatus" && msg.d.responseData) {
@@ -834,6 +853,20 @@
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ recording_dir: dir })
+              }).catch(() => {});
+            }
+          }
+          if (msg.op === 7 && msg.d.requestType === "GetVideoSettings" && msg.d.responseData) {
+            const num = parseInt(msg.d.responseData.fpsNumerator, 10);
+            const den = parseInt(msg.d.responseData.fpsDenominator, 10);
+            if (num > 0 && num <= 240 && den > 0 && den <= 10000) {
+              currentFpsNum = num;
+              currentFpsDen = den;
+              updateFpsTooltip();
+              fetch("/api/config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ fps_num: num, fps_den: den })
               }).catch(() => {});
             }
           }
@@ -873,6 +906,15 @@
     }
   }
 
+  function queryVideoSettings() {
+    if (obsSocket && obsSocket.readyState === WebSocket.OPEN) {
+      obsSocket.send(JSON.stringify({
+        op: 6,
+        d: { requestType: "GetVideoSettings", requestId: "req_video_settings" }
+      }));
+    }
+  }
+
   setInterval(queryRecordStatus, 1000);
 
   // --- HIGH-FREQUENCY STATUS & GLOBAL HOTKEY SYNC ---
@@ -884,6 +926,13 @@
           savedMarkersCount = Math.max(0, data.markers_count);
           updateMarkerCounter();
           updateUIStates();
+        }
+        if (typeof data.fps_num === "number" && typeof data.fps_den === "number") {
+          if (data.fps_num !== currentFpsNum || data.fps_den !== currentFpsDen) {
+            currentFpsNum = data.fps_num;
+            currentFpsDen = data.fps_den;
+            updateFpsTooltip();
+          }
         }
 
         // Global hotkey trigger detection.
