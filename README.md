@@ -97,7 +97,7 @@ flowchart TD
    - Set to your preferred `hotkey` (or combo) and click **OK**.
 
 > [!TIP]
-> By default, markers save to the exact folder where your OBS video files are written. To specify a custom destination, open **Tools** -> **Scripts**, select `marker_service.lua`, and set **Save Location**.
+> By default, markers save to the exact folder where your OBS video files are written. To specify a custom destination, open **Tools** -> **Scripts**, select `marker_service.lua`, and set **Save Location**. Use the five **Export ...** checkboxes there to generate only the formats your editor needs — with a single format checked, one flat file is written next to the recording instead of a `Markers_/` subfolder.
 
 > [!IMPORTANT]
 > The marker dock activates automatically as soon as OBS starts recording (`outputActive: true`). When recording stops, it resets cleanly for the next session.

@@ -760,8 +760,12 @@
       console.error("Save error:", err);
       const input = document.getElementById('dockInput');
       const prev = input.placeholder;
-      input.placeholder = 'Save failed - retry';
-      setTimeout(() => { if (input.placeholder === 'Save failed - retry') input.placeholder = prev; }, 2000);
+      // Surface server messages (e.g. "No formats enabled - tick a format
+      // in Tools > Scripts") instead of a generic retry note.
+      const msg = (err && err.message) ? err.message : 'Save failed - retry';
+      input.placeholder = msg.length > 60 ? msg.slice(0, 60) : msg;
+      const shown = input.placeholder;
+      setTimeout(() => { if (input.placeholder === shown) input.placeholder = prev; }, 2500);
     });
   }
 
