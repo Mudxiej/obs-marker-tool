@@ -70,7 +70,9 @@ Every marker session generates five simultaneous export files located in `Marker
 YouTube automatically converts timestamps in video descriptions into scrubbable player chapters when specific rules are met:
 - The first chapter must start at exactly `00:00:00`.
 - The description must contain at least 3 chapters in ascending order.
-- Each chapter must be at least 10 seconds long.
+- Each chapter must be at least 10 seconds apart — if ANY two are closer, YouTube disables chapters for the whole video.
+
+`markers.txt` is paste-safe: chapters closer than 10s to the previous kept chapter are commented out with `# ` (e.g. `# 00:03:19 - Crowd cheer [skipped for YouTube: <10s gap from 00:03:15]`), so YouTube ignores them while the timestamp stays readable in the file. To keep a skipped marker instead, delete the earlier line and remove the `# ` prefix. CSV/XML/FCPXML/JSON always keep every marker regardless.
 
 ### How to Apply
 1. Open `markers.txt` in any text editor.
@@ -90,8 +92,8 @@ YouTube automatically converts timestamps in video descriptions into scrubbable 
 
 ### Timecode Drift / Frame Rate Mismatches
 - OBS Studio typically records at 60.00 fps or 59.94 fps (NTSC).
-- `server.py` calculates frame positions using integer 60fps timebase (`frame_in = int(total_seconds * 60)`).
-- If your NLE project is set to 24fps or 29.97fps, ensure you match your sequence frame rate to 60fps before importing the XML to prevent fractional frame drift over multi-hour recordings.
+- `server.py` auto-detects the OBS framerate via `GetVideoSettings` and computes `frame_in` at that rate (falls back to 60fps).
+- If your NLE project uses a different rate, match the sequence to the detected fps shown in the dock tooltip before importing the XML to prevent fractional frame drift over multi-hour recordings.
 
 ### Accidental Marker Rollback
 - If an accidental keypress occurs, tap the Red Undo button in the dock within 5 seconds.

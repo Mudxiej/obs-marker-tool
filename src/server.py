@@ -440,16 +440,40 @@ class MarkerSession:
         timebase = self.get_timebase()
         ntsc_str = "TRUE" if self.is_ntsc() else "FALSE"
 
-        # 1. Human TXT Export (YouTube Chapters compliant: auto-prepends 00:00:00 - Intro)
+        # 1. Human TXT Export (YouTube Chapters: auto-prepends 00:00:00 - Intro).
+        # YouTube rejects the WHOLE chapter track if any two chapters are
+        # <10s apart, and it parses any line starting with a timestamp.
+        # Violations are therefore commented out ("# ...") so a direct
+        # copy-paste just works; nothing is dropped from the file or from
+        # the NLE/JSON exports. Gaps measure against the last KEPT chapter
+        # (commented lines are invisible to YouTube).
         txt_content = [
             f"# OBS Recording Markers - {self.session_id}",
             ""
         ]
         if self.markers:
+            chapters = []
             if self.markers[0].get("seconds", 0) > 0:
-                txt_content.append("00:00:00 - Intro")
-            for m in self.markers:
-                txt_content.append(f"{m['timecode']} - {m['name']}")
+                chapters.append((0.0, "00:00:00", "Intro"))
+            ordered = sorted(self.markers, key=lambda m: (float(m.get("seconds", 0)), str(m.get("timecode", ""))))
+            for m in ordered:
+                try:
+                    sec = float(m.get("seconds", 0))
+                except Exception:
+                    sec = 0.0
+                chapters.append((sec, m.get("timecode", "00:00:00"), m.get("name", "")))
+            if len(chapters) < 3:
+                txt_content.append(f"# NOTE: add at least {3 - len(chapters)} more chapter(s) for YouTube (min 3)")
+            last_kept_sec, last_kept_tc = None, None
+            for sec, tc, name in chapters:
+                if last_kept_sec is None:
+                    txt_content.append(f"{tc} - {name}")
+                    last_kept_sec, last_kept_tc = sec, tc
+                elif sec - last_kept_sec < 10:
+                    txt_content.append(f"# {tc} - {name} [skipped for YouTube: <10s gap from {last_kept_tc}]")
+                else:
+                    txt_content.append(f"{tc} - {name}")
+                    last_kept_sec, last_kept_tc = sec, tc
 
         if self.export_txt and self.txt_path:
             atomic_write_text(self.txt_path, "\n".join(txt_content) + "\n")
