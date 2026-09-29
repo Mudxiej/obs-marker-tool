@@ -78,13 +78,45 @@ local function trigger_freeze(pressed)
     end
 end
 
+local function read_saved_port()
+    local win_dir = get_script_dir()
+    local f = io.open(win_dir .. "port.txt", "r")
+    if not f then return nil end
+    local content = f:read("*l") or ""
+    f:close()
+    local port = tonumber((string.gsub(content or "", "%s+", "")))
+    if port and port >= 1 and port <= 65535 then
+        return math.floor(port)
+    end
+    return nil
+end
+
+local function probe_port(port)
+    local res = os.execute('curl.exe -s --fail --connect-timeout 1 http://127.0.0.1:' .. tostring(port) .. '/api/status > NUL 2>&1')
+    return res == 0 or res == true
+end
+
+local function find_active_port()
+    local saved = read_saved_port()
+    if saved and probe_port(saved) then
+        return saved
+    end
+    for port = 8765, 8770 do
+        if probe_port(port) then
+            return port
+        end
+    end
+    return nil
+end
+
 local function on_open_folder(props, prop)
     if custom_output_dir ~= nil and custom_output_dir ~= "" then
         -- Escape embedded quotes to avoid command injection via crafted path
         local safe = string.gsub(custom_output_dir, '"', '')
         os.execute('start "" explorer.exe "' .. safe .. '"')
     else
-        os.execute('start "" curl.exe -s --connect-timeout 2 http://127.0.0.1:8765/api/open_folder')
+        local port = find_active_port() or 8765
+        os.execute('start "" curl.exe -s --connect-timeout 2 http://127.0.0.1:' .. tostring(port) .. '/api/open_folder')
     end
     return true
 end
@@ -155,13 +187,9 @@ end
 function script_load(settings)
     local win_dir = get_script_dir()
 
-    -- Single-instance guard: only launch the daemon if /api/status is unreachable.
-    -- curl exit code 0 means a server is already listening on 127.0.0.1:8765.
-    local probe = os.execute('curl.exe -s --fail --connect-timeout 1 http://127.0.0.1:8765/api/status > NUL 2>&1')
-    -- os.execute return semantics differ across Lua versions (boolean vs exit code);
-    -- treat 0 / true as "already running".
-    local already_running = (probe == 0 or probe == true)
-    if not already_running then
+    -- Single-instance guard: reuse a healthy server on the saved port or
+    -- anywhere in 8765-8770; launch the daemon only if all probes fail.
+    if not find_active_port() then
         -- Start python server silently via VBS without blocking OBS
         os.execute('start "" wscript.exe "' .. win_dir .. 'run_silent.vbs"')
     end
