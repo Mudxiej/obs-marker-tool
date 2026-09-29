@@ -19,6 +19,7 @@ from xml.sax.saxutils import escape as xml_escape
 import urllib.parse
 import shutil
 import subprocess
+import tempfile
 
 PORT = 8765
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -44,6 +45,44 @@ def _resolve_desktop_dir():
 DESKTOP_DIR = _resolve_desktop_dir()
 CONFIG_FILE = SCRIPT_DIR / "config.json"
 FLAG_FILE = SCRIPT_DIR / "freeze_trigger.flag"
+
+
+def atomic_write_text(path, content):
+    """Crash-safe write: temp file in same dir + fsync + os.replace.
+
+    Keeps the previous good file if the process dies mid-write.
+    Same filesystem is guaranteed because tmp lives next to target.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=target.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp_name, target)
+        try:
+            # Sync directory entry so the rename survives power loss
+            dir_fd = os.open(str(target.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            pass
+    except Exception:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except Exception:
+            pass
+        raise
 
 class MarkerSession:
     def __init__(self):
@@ -198,8 +237,7 @@ class MarkerSession:
             for m in self.markers:
                 txt_content.append(f"{m['timecode']} - {m['name']}")
 
-        with open(self.txt_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(txt_content) + "\n")
+        atomic_write_text(self.txt_path, "\n".join(txt_content) + "\n")
 
         # 2. Premiere Pro CSV Export
         csv_rows = ["Marker Name,Description,In,Out,Duration"]
@@ -220,8 +258,7 @@ class MarkerSession:
             safe_name = m['name'].replace('"', '""')
             csv_rows.append(f'"{safe_name}","{safe_name}",{tc_frames},{tc_frames},00:00:00:00')
 
-        with open(self.csv_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(csv_rows) + "\n")
+        atomic_write_text(self.csv_path, "\n".join(csv_rows) + "\n")
 
         # 3. Premiere Pro / FCP 7 Sequence XML Export
         xml_lines = [
@@ -259,8 +296,7 @@ class MarkerSession:
             '</xmeml>'
         ])
 
-        with open(self.xml_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(xml_lines) + "\n")
+        atomic_write_text(self.xml_path, "\n".join(xml_lines) + "\n")
 
         # 4. Final Cut Pro FCPXML Export
         fcpxml_lines = [
@@ -300,8 +336,7 @@ class MarkerSession:
             '</fcpxml>'
         ])
 
-        with open(self.fcpxml_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(fcpxml_lines) + "\n")
+        atomic_write_text(self.fcpxml_path, "\n".join(fcpxml_lines) + "\n")
 
         self.files_created = True
 
