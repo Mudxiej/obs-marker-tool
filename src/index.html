@@ -98,6 +98,10 @@
     color: #00d2ff;
   }
 
+  .btn-clock.stale {
+    opacity: 0.55;
+  }
+
   .btn-clock:disabled {
     background-color: var(--bg);
     color: var(--text-muted);
@@ -424,6 +428,8 @@
   let isResuming = false;
   let resumeFallbackTimer = null;
   let pausedWarnTimer = null;
+  let lastTimecodeAt = 0;
+  let staleFallbackTimer = null;
   let currentFpsNum = 60;
   let currentFpsDen = 1;
 
@@ -432,14 +438,30 @@
     return (Math.round(f * 100) / 100).toString();
   }
 
+  // Stale = recording live (not paused) but no fresh OBS timecode for >1.5s
+  // (WebSocket down or OBS not answering). Pauses hold time intentionally,
+  // so they must never count as stale.
+  function isStale() {
+    return isRecording && !isPaused && (Date.now() - lastTimecodeAt > 1500);
+  }
+
+  function refreshStaleClock() {
+    const btn = document.getElementById('btnClock');
+    if (!btn) return;
+    btn.classList.toggle('stale', isStale() && !selectedTimestamp);
+  }
+
   function updateFpsTooltip() {
     const btn = document.getElementById('btnClock');
     if (!btn) return;
     if (selectedTimestamp) {
       btn.title = `Time frozen: ${selectedTimestamp} @${fpsLabel()}fps (click to re-grab)`;
+    } else if (isStale()) {
+      btn.title = `Timecode stale (>1.5s) - check WebSocket @${fpsLabel()}fps`;
     } else {
       btn.title = `Freeze exact timecode @${fpsLabel()}fps`;
     }
+    refreshStaleClock();
   }
 
   // Presets in localStorage
@@ -564,10 +586,10 @@
   }
 
   function applyFreezeState(fromHotkey) {
-    // If we just resumed, currentRecordingTimecode is still the pre-pause
-    // value until the async GetRecordStatus round-trip lands. Defer the lock
-    // so a press within ~50-150ms of resume cannot stage minutes-old time.
-    if (isResuming) {
+    // If we just resumed - or the OBS timecode is stale (WS down) - the
+    // cached value can't be trusted. Defer the lock until a fresh
+    // GetRecordStatus lands (1500ms fallback releases the guard).
+    if (isResuming || isStale()) {
       pendingFreeze = true;
       queryRecordStatus();
       const btnR = document.getElementById('btnClock');
@@ -580,6 +602,17 @@
       if (inputR && !inputR.disabled) {
         inputR.focus();
       }
+      // Never wedge: if no fresh timecode arrives (dead socket), fall back
+      // to the last-known value instead of leaving Syncing... forever.
+      clearTimeout(staleFallbackTimer);
+      staleFallbackTimer = setTimeout(() => {
+        if (pendingFreeze && !selectedTimestamp) {
+          pendingFreeze = false;
+          selectedTimestamp = currentRecordingTimecode;
+          updateFpsTooltip();
+          updateUIStates();
+        }
+      }, 1500);
       return;
     }
     // Request a fresh timecode, then freeze when the response arrives.
@@ -606,6 +639,7 @@
   function applyFreshFreeze(timecode) {
     if (!pendingFreeze) return;
     pendingFreeze = false;
+    clearTimeout(staleFallbackTimer);
     if (!timecode) return;
     selectedTimestamp = timecode;
     const btn = document.getElementById('btnClock');
@@ -616,6 +650,8 @@
 
   function resetClockButton() {
     selectedTimestamp = null;
+    pendingFreeze = false;
+    clearTimeout(staleFallbackTimer);
     const btn = document.getElementById('btnClock');
     btn.classList.remove('picked');
 
@@ -979,6 +1015,7 @@
               // While paused the timecode stalls at the pause point; keep it
               // but do not treat the stall as a fresh freeze.
               currentRecordingTimecode = msg.d.responseData.outputTimecode.split(".")[0];
+              lastTimecodeAt = Date.now();
               if (!isPaused) {
                 // Fresh post-resume timecode arrived: release the guard so
                 // deferred freezes lock the live value, not the pause point.
@@ -990,6 +1027,7 @@
               } else {
                 pendingFreeze = false;
               }
+              updateFpsTooltip();
             } else {
               pendingFreeze = false;
             }
@@ -1024,6 +1062,10 @@
       };
 
       obsSocket.onclose = () => {
+        lastTimecodeAt = 0;
+        isResuming = false;
+        clearTimeout(resumeFallbackTimer);
+        clearTimeout(staleFallbackTimer);
         setRecordingUIState(false);
         portIndex++;
         setTimeout(initObsWebSocket, 2000);
@@ -1100,8 +1142,14 @@
         } else if (lastKnownFreezeTime === null && typeof data.freeze_event === "number") {
           lastKnownFreezeTime = data.freeze_event;
         }
+        // Refresh stale visuals (dimming + tooltip) so a dead WebSocket
+        // surfaces within ~150ms without waiting for other events.
+        updateFpsTooltip();
       })
-      .catch(() => {});
+      .catch(() => {
+        // Server unreachable: still refresh so stale dimming appears.
+        refreshStaleClock();
+      });
   }
 
   // Poll at 150ms for responsive global in-game hotkey detection
