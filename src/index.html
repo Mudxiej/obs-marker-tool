@@ -935,9 +935,23 @@
             const state = (msg.d.eventData.outputState || "").toUpperCase();
             setRecordingUIState(active);
             if (!active) {
-              fetch("/api/reset_session", { method: "POST" }).catch(() => {});
-              savedMarkersCount = 0;
-              updateMarkerCounter();
+              // outputPath only exists on STOPPED. Finalize (video-stem rename)
+              // first so reset doesn't wipe the session before the rename.
+              const outputPath = (msg.d.eventData && msg.d.eventData.outputPath) || "";
+              const doReset = () => {
+                fetch("/api/reset_session", { method: "POST" }).catch(() => {});
+                savedMarkersCount = 0;
+                updateMarkerCounter();
+              };
+              if (outputPath) {
+                fetch("/api/finalize_session", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ output_path: outputPath })
+                }).catch(() => {}).finally(doReset);
+              } else {
+                doReset();
+              }
             } else {
               if (state.indexOf("PAUSED") !== -1) {
                 setPausedUIState(true);
