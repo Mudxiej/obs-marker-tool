@@ -4,6 +4,11 @@ local obs = obslua
 local hotkey_id = obs.OBS_INVALID_HOTKEY_ID
 local custom_output_dir = ""
 local folder_naming = "timestamp"
+local export_txt = true
+local export_csv = true
+local export_xml = true
+local export_fcpxml = true
+local export_json = true
 
 function script_description()
     return "OBS Marker Tool Service\n\n" ..
@@ -38,6 +43,8 @@ local function read_config_value(key, fallback)
     if not content then return fallback end
     local s = string.match(content, '"' .. key .. '"%s*:%s*"([^"]-)"')
     if s ~= nil then return s end
+    local b = string.match(content, '"' .. key .. '"%s*:%s*(%a+)')
+    if b == "true" then return true elseif b == "false" then return false end
     local n = string.match(content, '"' .. key .. '"%s*:%s*(-?[%d%.]+)')
     if n ~= nil then return n end
     return fallback
@@ -50,10 +57,12 @@ local function write_config()
     -- don't clobber them (and vice versa).
     local fps_num = read_config_value("fps_num", "60")
     local fps_den = read_config_value("fps_den", "1")
+    local function boolstr(v) if v then return "true" else return "false" end end
     local f = io.open(config_file, "w")
     if f then
         local safe_dir = string.gsub(custom_output_dir or "", "\\", "\\\\")
-        f:write('{"custom_output_dir": "' .. safe_dir .. '", "folder_naming": "' .. (folder_naming or "timestamp") .. '", "fps_num": ' .. tostring(fps_num) .. ', "fps_den": ' .. tostring(fps_den) .. '}')
+        f:write('{"custom_output_dir": "' .. safe_dir .. '", "folder_naming": "' .. (folder_naming or "timestamp") .. '", "fps_num": ' .. tostring(fps_num) .. ', "fps_den": ' .. tostring(fps_den)
+            .. ', "export_txt": ' .. boolstr(export_txt) .. ', "export_csv": ' .. boolstr(export_csv) .. ', "export_xml": ' .. boolstr(export_xml) .. ', "export_fcpxml": ' .. boolstr(export_fcpxml) .. ', "export_json": ' .. boolstr(export_json) .. '}')
         f:close()
     end
 end
@@ -93,22 +102,54 @@ function script_properties()
     obs.obs_property_list_add_string(naming, "Timestamp (Markers_YYYY-MM-DD_HH-MM-SS)", "timestamp")
     obs.obs_property_list_add_string(naming, "Video filename (rename on stop)", "video")
 
-    -- 3. Open folder button
+    -- 3. Export format toggles (all on = today's 5-file behavior)
+    obs.obs_properties_add_bool(props, "export_txt", "Export YouTube Chapters (markers.txt)")
+    obs.obs_properties_add_bool(props, "export_csv", "Export CSV Timeline (markers.csv)")
+    obs.obs_properties_add_bool(props, "export_xml", "Export Premiere Pro XML (premiere_sequence.xml)")
+    obs.obs_properties_add_bool(props, "export_fcpxml", "Export Final Cut Pro XML (final_cut_pro.fcpxml)")
+    obs.obs_properties_add_bool(props, "export_json", "Export JSON Timeline (markers.json)")
+
+    -- 4. Open folder button
     obs.obs_properties_add_button(props, "btn_open", "Open Save Folder in Explorer", on_open_folder)
 
     return props
+end
+
+local function read_bool_setting(settings, key, current)
+    -- Old profiles predate these keys: without a user value, keep today's
+    -- all-on behavior instead of OBS's C-default false.
+    local has_fn = obs.obs_data_has_user_value
+    if has_fn then
+        local ok_has, has_user = pcall(has_fn, settings, key)
+        if ok_has and has_user == false then
+            return current
+        end
+    end
+    local ok, val = pcall(obs.obs_data_get_bool, settings, key)
+    if not ok then return current end
+    return val
 end
 
 function script_update(settings)
     custom_output_dir = obs.obs_data_get_string(settings, "custom_output_dir")
     folder_naming = obs.obs_data_get_string(settings, "folder_naming")
     if folder_naming ~= "video" then folder_naming = "timestamp" end
+    export_txt = read_bool_setting(settings, "export_txt", export_txt)
+    export_csv = read_bool_setting(settings, "export_csv", export_csv)
+    export_xml = read_bool_setting(settings, "export_xml", export_xml)
+    export_fcpxml = read_bool_setting(settings, "export_fcpxml", export_fcpxml)
+    export_json = read_bool_setting(settings, "export_json", export_json)
     write_config()
 end
 
 function script_defaults(settings)
     obs.obs_data_set_default_string(settings, "custom_output_dir", "")
     obs.obs_data_set_default_string(settings, "folder_naming", "timestamp")
+    obs.obs_data_set_default_bool(settings, "export_txt", true)
+    obs.obs_data_set_default_bool(settings, "export_csv", true)
+    obs.obs_data_set_default_bool(settings, "export_xml", true)
+    obs.obs_data_set_default_bool(settings, "export_fcpxml", true)
+    obs.obs_data_set_default_bool(settings, "export_json", true)
 end
 
 function script_load(settings)
@@ -135,6 +176,11 @@ function script_load(settings)
     custom_output_dir = obs.obs_data_get_string(settings, "custom_output_dir")
     folder_naming = obs.obs_data_get_string(settings, "folder_naming")
     if folder_naming ~= "video" then folder_naming = "timestamp" end
+    export_txt = read_bool_setting(settings, "export_txt", export_txt)
+    export_csv = read_bool_setting(settings, "export_csv", export_csv)
+    export_xml = read_bool_setting(settings, "export_xml", export_xml)
+    export_fcpxml = read_bool_setting(settings, "export_fcpxml", export_fcpxml)
+    export_json = read_bool_setting(settings, "export_json", export_json)
     write_config()
 end
 
@@ -144,9 +190,14 @@ function script_save(settings)
     obs.obs_data_set_array(settings, "marker_tool.freeze", hotkey_save_array)
     obs.obs_data_array_release(hotkey_save_array)
 
-    -- Save directory + naming properties
+    -- Save directory + naming + export properties
     obs.obs_data_set_string(settings, "custom_output_dir", custom_output_dir)
     obs.obs_data_set_string(settings, "folder_naming", folder_naming)
+    obs.obs_data_set_bool(settings, "export_txt", export_txt)
+    obs.obs_data_set_bool(settings, "export_csv", export_csv)
+    obs.obs_data_set_bool(settings, "export_xml", export_xml)
+    obs.obs_data_set_bool(settings, "export_fcpxml", export_fcpxml)
+    obs.obs_data_set_bool(settings, "export_json", export_json)
     write_config()
 end
 

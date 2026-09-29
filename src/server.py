@@ -120,6 +120,32 @@ def atomic_write_text(path, content):
             pass
         raise
 
+EXPORT_KINDS = ("txt", "csv", "xml", "fcpxml", "json")
+FLAT_BASENAMES = {
+    "txt": "markers.txt",
+    "csv": "markers.csv",
+    "xml": "premiere_sequence.xml",
+    "fcpxml": "final_cut_pro.fcpxml",
+    "json": "markers.json",
+}
+
+
+def parse_export_bool(value, default=True):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+        if v in ("0", "false", "no", "off"):
+            return False
+    return default
+
+
 class MarkerSession:
     def __init__(self):
         self.session_id = None
@@ -130,6 +156,9 @@ class MarkerSession:
         self.xml_path = None
         self.fcpxml_path = None
         self.json_path = None
+        self.flat_mode = False
+        self.flat_path = None
+        self.flat_kind = None
         self.markers = []
         self.recording_dir = None
         self.custom_output_dir = None
@@ -139,6 +168,11 @@ class MarkerSession:
         self.paused = False
         self.folder_naming = "timestamp"
         self.recording_filename = None
+        self.export_txt = True
+        self.export_csv = True
+        self.export_xml = True
+        self.export_fcpxml = True
+        self.export_json = True
         self.load_config()
 
     def load_config(self):
@@ -160,8 +194,15 @@ class MarkerSession:
                         self.folder_naming = "video"
                     else:
                         self.folder_naming = "timestamp"
+                    for kind in EXPORT_KINDS:
+                        key = f"export_{kind}"
+                        if key in data:
+                            setattr(self, key, parse_export_bool(data[key], True))
             except Exception:
                 pass
+
+    def enabled_formats(self):
+        return [k for k in EXPORT_KINDS if getattr(self, f"export_{k}", True)]
 
     def save_config(self):
         try:
@@ -178,6 +219,8 @@ class MarkerSession:
             data["fps_num"] = self.fps_num
             data["fps_den"] = self.fps_den
             data["folder_naming"] = self.folder_naming or "timestamp"
+            for kind in EXPORT_KINDS:
+                data[f"export_{kind}"] = bool(getattr(self, f"export_{kind}", True))
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f)
         except Exception:
@@ -248,26 +291,56 @@ class MarkerSession:
             except Exception:
                 pass
 
+    FLAT_EXT = {"txt": "txt", "csv": "csv", "xml": "xml", "fcpxml": "fcpxml", "json": "json"}
+
     def start_new_session_if_needed(self):
         if not self.session_id:
+            self.load_config()
+            enabled = self.enabled_formats()
+            if not enabled:
+                raise ValueError("No formats enabled - tick a format in Tools > Scripts")
             now_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             self.session_id = now_str
-            folder_name = f"Markers_{now_str}"
             base_dir = self.get_base_dir()
-            # Avoid folder collision when two sessions start within the same second
-            candidate = base_dir / folder_name
-            suffix = 1
-            while candidate.exists():
-                suffix += 1
-                candidate = base_dir / f"{folder_name}_{suffix}"
-                if suffix > 100:
-                    break
-            self.folder_path = candidate
-            self.txt_path = self.folder_path / "markers.txt"
-            self.csv_path = self.folder_path / "markers.csv"
-            self.xml_path = self.folder_path / "premiere_sequence.xml"
-            self.fcpxml_path = self.folder_path / "final_cut_pro.fcpxml"
-            self.json_path = self.folder_path / "markers.json"
+            if len(enabled) == 1:
+                # Flat mode: single file next to the recording, no subfolder.
+                kind = enabled[0]
+                ext = self.FLAT_EXT[kind]
+                candidate = base_dir / f"markers_{now_str}.{ext}"
+                suffix = 1
+                while candidate.exists():
+                    suffix += 1
+                    candidate = base_dir / f"markers_{now_str}_{suffix}.{ext}"
+                    if suffix > 100:
+                        break
+                self.flat_mode = True
+                self.flat_kind = kind
+                self.flat_path = candidate
+                self.folder_path = None
+                self.txt_path = candidate if kind == "txt" else None
+                self.csv_path = candidate if kind == "csv" else None
+                self.xml_path = candidate if kind == "xml" else None
+                self.fcpxml_path = candidate if kind == "fcpxml" else None
+                self.json_path = candidate if kind == "json" else None
+            else:
+                folder_name = f"Markers_{now_str}"
+                # Avoid folder collision when two sessions start within the same second
+                candidate = base_dir / folder_name
+                suffix = 1
+                while candidate.exists():
+                    suffix += 1
+                    candidate = base_dir / f"{folder_name}_{suffix}"
+                    if suffix > 100:
+                        break
+                self.flat_mode = False
+                self.flat_kind = None
+                self.flat_path = None
+                self.folder_path = candidate
+                self.txt_path = self.folder_path / "markers.txt"
+                self.csv_path = self.folder_path / "markers.csv"
+                self.xml_path = self.folder_path / "premiere_sequence.xml"
+                self.fcpxml_path = self.folder_path / "final_cut_pro.fcpxml"
+                self.json_path = self.folder_path / "markers.json"
             self.files_created = False
             self.markers = []
 
@@ -339,9 +412,29 @@ class MarkerSession:
             self.cleanup_session_files()
         return removed
 
+    @staticmethod
+    def _remove_if_exists(path):
+        try:
+            p = Path(path) if path else None
+            if p is not None and p.exists():
+                try:
+                    p.chmod(stat.S_IWRITE | stat.S_IREAD)
+                except Exception:
+                    pass
+                p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def flush_files(self):
-        if not self.folder_path.exists():
-            self.folder_path.mkdir(parents=True, exist_ok=True)
+        if self.flat_mode:
+            if not self.flat_path:
+                raise ValueError("No formats enabled - tick a format in Tools > Scripts")
+            self.flat_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            if not self.folder_path:
+                raise ValueError("No formats enabled - tick a format in Tools > Scripts")
+            if not self.folder_path.exists():
+                self.folder_path.mkdir(parents=True, exist_ok=True)
 
         fps_f = self.get_fps_float()
         timebase = self.get_timebase()
@@ -358,7 +451,10 @@ class MarkerSession:
             for m in self.markers:
                 txt_content.append(f"{m['timecode']} - {m['name']}")
 
-        atomic_write_text(self.txt_path, "\n".join(txt_content) + "\n")
+        if self.export_txt and self.txt_path:
+            atomic_write_text(self.txt_path, "\n".join(txt_content) + "\n")
+        elif not self.flat_mode:
+            self._remove_if_exists(self.txt_path)
 
         # 2. Premiere Pro CSV Export (HH:MM:SS:FF at detected fps)
         # Derived from stored total frames so sub-second fractions roll over
@@ -379,7 +475,10 @@ class MarkerSession:
             safe_name = m['name'].replace('"', '""')
             csv_rows.append(f'"{safe_name}","{safe_name}",{tc_frames},{tc_frames},00:00:00:00')
 
-        atomic_write_text(self.csv_path, "\n".join(csv_rows) + "\n")
+        if self.export_csv and self.csv_path:
+            atomic_write_text(self.csv_path, "\n".join(csv_rows) + "\n")
+        elif not self.flat_mode:
+            self._remove_if_exists(self.csv_path)
 
         # 3. Premiere Pro / FCP 7 Sequence XML Export
         xml_lines = [
@@ -417,7 +516,10 @@ class MarkerSession:
             '</xmeml>'
         ])
 
-        atomic_write_text(self.xml_path, "\n".join(xml_lines) + "\n")
+        if self.export_xml and self.xml_path:
+            atomic_write_text(self.xml_path, "\n".join(xml_lines) + "\n")
+        elif not self.flat_mode:
+            self._remove_if_exists(self.xml_path)
 
         # 4. Final Cut Pro FCPXML Export
         # All time values use the format's rational timescale (num/den) so
@@ -462,7 +564,10 @@ class MarkerSession:
             '</fcpxml>'
         ])
 
-        atomic_write_text(self.fcpxml_path, "\n".join(fcpxml_lines) + "\n")
+        if self.export_fcpxml and self.fcpxml_path:
+            atomic_write_text(self.fcpxml_path, "\n".join(fcpxml_lines) + "\n")
+        elif not self.flat_mode:
+            self._remove_if_exists(self.fcpxml_path)
 
         # 5. Programmatic JSON timeline export (MoviePy / Resolve API / bots).
         # name + label aliases plus stable id so consumers don't care which
@@ -485,12 +590,31 @@ class MarkerSession:
             "fps_den": self.fps_den,
             "markers": json_markers,
         }
-        atomic_write_text(self.json_path, json.dumps(json_doc, indent=2, ensure_ascii=False) + "\n")
+        if self.export_json and self.json_path:
+            atomic_write_text(self.json_path, json.dumps(json_doc, indent=2, ensure_ascii=False) + "\n")
+        elif not self.flat_mode:
+            self._remove_if_exists(self.json_path)
 
         self.files_created = True
 
     def cleanup_session_files(self):
-        """Completely delete the 5 export files and the session folder."""
+        """Delete session outputs: folder mode purges the folder, flat mode unlinks one file."""
+        if self.flat_mode:
+            gc.collect()
+            target = self.flat_path
+            if target:
+                p = Path(target)
+                for _ in range(8):
+                    if not p.exists():
+                        break
+                    try:
+                        p.chmod(stat.S_IWRITE | stat.S_IREAD)
+                        p.unlink(missing_ok=True)
+                        break
+                    except Exception:
+                        time.sleep(0.05)
+            self.reset_session()
+            return
         folder = self.folder_path
         files_to_remove = [self.txt_path, self.csv_path, self.xml_path, self.fcpxml_path, self.json_path]
 
@@ -573,37 +697,86 @@ class MarkerSession:
         self.xml_path = None
         self.fcpxml_path = None
         self.json_path = None
+        self.flat_mode = False
+        self.flat_path = None
+        self.flat_kind = None
         self.markers = []
         self.paused = False
         self.recording_filename = None
 
-    def finalize_session(self, output_path):
-        """Rename the timestamp folder to a video-stem folder on recording stop.
+    @staticmethod
+    def _video_stem(output_path):
+        try:
+            base = (output_path or "").replace("/", "\\").split("\\")[-1].strip()
+        except Exception:
+            return None, None
+        if not base:
+            return None, None
+        stem = base.rsplit(".", 1)[0] if "." in base else base
+        stem = MarkerSession.sanitize_stem(stem)
+        if not stem:
+            return base, None
+        return base, stem
 
-        Active sessions always write to Markers_<timestamp>/ so a mid-stream
-        crash loses nothing. When OBS reports outputPath on STOPPED and
-        folder_naming == "video", rename to Markers_<stem> with collision
-        suffix. Failures keep the timestamp folder intact.
+    def finalize_session(self, output_path):
+        """Rename outputs to the video stem on recording stop.
+
+        Folder mode renames Markers_<timestamp>/ to Markers_<stem>/;
+        flat mode renames markers_<timestamp>.<ext> to <stem>.<ext>.
+        Active sessions always use timestamp names so a mid-stream crash
+        loses nothing. Failures keep current names intact.
         Returns (renamed: bool, folder: str|None, reason: str).
         """
         self.load_config()
         if self.folder_naming != "video":
-            return False, str(self.folder_path) if self.folder_path else None, "timestamp mode"
+            current = str(self.flat_path) if self.flat_mode and self.flat_path else (str(self.folder_path) if self.folder_path else None)
+            return False, current, "timestamp mode"
+        base, stem = self._video_stem(output_path)
+        if base is None:
+            current = str(self.flat_path) if self.flat_mode and self.flat_path else (str(self.folder_path) if self.folder_path else None)
+            return False, current, "empty output path"
+        if stem is None:
+            current = str(self.flat_path) if self.flat_mode and self.flat_path else (str(self.folder_path) if self.folder_path else None)
+            return False, current, "unusable stem"
+        self.recording_filename = base
+        if self.flat_mode:
+            if not self.flat_path or not Path(self.flat_path).exists():
+                return False, None, "no session file"
+            ext = self.FLAT_EXT.get(self.flat_kind or "", "txt")
+            parent = Path(self.flat_path).parent
+            candidate = parent / f"{stem}.{ext}"
+            if candidate.resolve() == Path(self.flat_path).resolve():
+                return False, str(self.flat_path), "already named"
+            suffix = 1
+            while candidate.exists():
+                suffix += 1
+                candidate = parent / f"{stem}_{suffix}.{ext}"
+                if suffix > 100:
+                    return False, str(self.flat_path), "collision overflow"
+            for _ in range(3):
+                try:
+                    os.rename(str(self.flat_path), str(candidate))
+                    break
+                except (PermissionError, OSError):
+                    time.sleep(0.05)
+            else:
+                return False, str(self.flat_path), "rename failed"
+            if not candidate.exists():
+                return False, str(self.flat_path), "rename failed"
+            self.flat_path = candidate
+            if self.flat_kind == "txt":
+                self.txt_path = candidate
+            elif self.flat_kind == "csv":
+                self.csv_path = candidate
+            elif self.flat_kind == "xml":
+                self.xml_path = candidate
+            elif self.flat_kind == "fcpxml":
+                self.fcpxml_path = candidate
+            elif self.flat_kind == "json":
+                self.json_path = candidate
+            return True, str(candidate), "renamed"
         if not self.folder_path or not self.folder_path.exists():
             return False, None, "no session folder"
-        try:
-            base = (output_path or "").replace("/", "\\").split("\\")[-1].strip()
-        except Exception:
-            base = ""
-        if not base:
-            return False, str(self.folder_path), "empty output path"
-        stem = base
-        if "." in base:
-            stem = base.rsplit(".", 1)[0]
-        stem = self.sanitize_stem(stem)
-        if not stem:
-            return False, str(self.folder_path), "unusable stem"
-        self.recording_filename = base
         target = self.folder_path.parent / f"Markers_{stem}"
         if target.resolve() == self.folder_path.resolve():
             return False, str(self.folder_path), "already named"
@@ -699,7 +872,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "active_session": session.session_id,
                 "markers_count": len(session.markers),
                 "files_created": session.files_created,
-                "folder": str(session.folder_path) if session.folder_path else None,
+                "folder": str(session.flat_path) if session.flat_mode and session.flat_path else (str(session.folder_path) if session.folder_path else None),
+                "output_mode": "flat" if session.flat_mode else "folder",
+                "enabled_formats": session.enabled_formats(),
                 "base_dir": str(session.get_base_dir()),
                 "recording_dir": str(session.recording_dir) if session.recording_dir else None,
                 "custom_output_dir": str(session.custom_output_dir) if session.custom_output_dir else None,
@@ -722,10 +897,19 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "fps": session.get_fps_float(),
                 "paused": session.paused,
                 "folder_naming": session.folder_naming,
-                "recording_filename": session.recording_filename
+                "recording_filename": session.recording_filename,
+                "enabled_formats": session.enabled_formats(),
+                "export_txt": session.export_txt,
+                "export_csv": session.export_csv,
+                "export_xml": session.export_xml,
+                "export_fcpxml": session.export_fcpxml,
+                "export_json": session.export_json
             })
         elif parsed.path == "/api/open_folder":
-            target = session.folder_path if (session.folder_path and session.folder_path.exists()) else session.get_base_dir()
+            if session.flat_mode and session.flat_path:
+                target = Path(session.flat_path).parent
+            else:
+                target = session.folder_path if (session.folder_path and session.folder_path.exists()) else session.get_base_dir()
             try:
                 target.mkdir(parents=True, exist_ok=True)
                 os.startfile(str(target))
@@ -746,12 +930,19 @@ class RequestHandler(BaseHTTPRequestHandler):
                 timecode = payload.get("timecode", "00:00:00")
                 name = payload.get("name", "")
                 paused = payload.get("paused", session.paused)
-                marker = session.add_marker(timecode, name, paused=bool(paused))
+                try:
+                    marker = session.add_marker(timecode, name, paused=bool(paused))
+                except ValueError as ve:
+                    self.send_json({"success": False, "error": str(ve)}, status=400)
+                    return
+                out = str(session.flat_path) if session.flat_mode and session.flat_path else str(session.folder_path)
                 self.send_json({
                     "success": True, 
                     "marker": marker,
                     "count": len(session.markers),
-                    "folder": str(session.folder_path)
+                    "folder": out,
+                    "output_mode": "flat" if session.flat_mode else "folder",
+                    "enabled_formats": session.enabled_formats()
                 })
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)
@@ -805,6 +996,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                     naming = payload["folder_naming"]
                     session.folder_naming = "video" if isinstance(naming, str) and naming.strip().lower() == "video" else "timestamp"
                     session.save_config()
+                exports_changed = False
+                for kind in EXPORT_KINDS:
+                    key = f"export_{kind}"
+                    if key in payload:
+                        setattr(session, key, parse_export_bool(payload[key], True))
+                        exports_changed = True
+                if exports_changed:
+                    session.save_config()
                 if "recording_filename" in payload:
                     rec_fn = payload["recording_filename"]
                     if rec_fn is None:
@@ -822,7 +1021,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "fps": session.get_fps_float(),
                     "paused": session.paused,
                     "folder_naming": session.folder_naming,
-                    "recording_filename": session.recording_filename
+                    "recording_filename": session.recording_filename,
+                    "enabled_formats": session.enabled_formats(),
+                    "export_txt": session.export_txt,
+                    "export_csv": session.export_csv,
+                    "export_xml": session.export_xml,
+                    "export_fcpxml": session.export_fcpxml,
+                    "export_json": session.export_json
                 })
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)

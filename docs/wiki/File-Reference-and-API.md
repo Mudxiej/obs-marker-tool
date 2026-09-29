@@ -71,10 +71,10 @@ Embedded Lua script managing process lifecycle, global hotkey registration, and 
 #### Key Functions & Callbacks
 - `script_description()`: Displays plugin overview, quick start steps, and hotkey binding tips in OBS Scripts dialog.
 - `get_script_dir()`: Normalizes directory path using `string.gsub(dir, "/", "\\")` for Windows execution.
-- `write_config()`: Serializes `custom_output_dir` into `config.json` inside the script directory.
+- `write_config()`: Serializes `custom_output_dir`, `folder_naming`, fps, and the five `export_*` toggles into `config.json` (merge-safe, preserves server-written keys).
 - `trigger_freeze(pressed)`: Callback bound to `marker_tool.freeze` hotkey. Writes timestamp to `freeze_trigger.flag`.
 - `on_open_folder(props, prop)`: UI button callback opening active marker directory via Windows Explorer or curl REST call.
-- `script_properties()`: Defines directory path picker (`custom_output_dir`) and open folder button (`btn_open`).
+- `script_properties()`: Defines directory path picker (`custom_output_dir`), folder-naming dropdown (`folder_naming`), five export toggles (`export_txt/csv/xml/fcpxml/json`, all on by default), and open folder button (`btn_open`). Single enabled format writes one flat file next to the recording; 2+ write the `Markers_/` subfolder.
 - `script_update(settings)`: Triggers when user modifies settings in OBS dialog; updates and saves configuration.
 - `script_defaults(settings)`: Initializes default settings values.
 - `script_load(settings)`:
