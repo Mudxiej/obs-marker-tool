@@ -99,6 +99,7 @@ class MarkerSession:
         self.last_freeze_time = 0.0
         self.fps_num = 60
         self.fps_den = 1
+        self.paused = False
         self.load_config()
 
     def load_config(self):
@@ -238,7 +239,7 @@ class MarkerSession:
         frame_in = int(round(total_seconds * fps_f))
         return total_seconds, frame_in
 
-    def add_marker(self, timecode, name):
+    def add_marker(self, timecode, name, paused=False):
         self.start_new_session_if_needed()
         display_name = name.strip() if name and name.strip() else f"Marker {len(self.markers) + 1}"
 
@@ -253,6 +254,7 @@ class MarkerSession:
             "seconds": total_seconds,
             "name": display_name,
             "frame_in": frame_in,
+            "paused": bool(paused),
             "timestamp": datetime.now().strftime("%H:%M:%S")
         }
         self.markers.append(marker_entry)
@@ -488,6 +490,7 @@ class MarkerSession:
         self.xml_path = None
         self.fcpxml_path = None
         self.markers = []
+        self.paused = False
 
 session = MarkerSession()
 
@@ -561,7 +564,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "freeze_event": session.last_freeze_time,
                 "fps_num": session.fps_num,
                 "fps_den": session.fps_den,
-                "fps": session.get_fps_float()
+                "fps": session.get_fps_float(),
+                "paused": session.paused
             }
             self.send_json(data)
         elif parsed.path == "/api/config":
@@ -571,7 +575,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "base_dir": str(session.get_base_dir()),
                 "fps_num": session.fps_num,
                 "fps_den": session.fps_den,
-                "fps": session.get_fps_float()
+                "fps": session.get_fps_float(),
+                "paused": session.paused
             })
         elif parsed.path == "/api/open_folder":
             target = session.folder_path if (session.folder_path and session.folder_path.exists()) else session.get_base_dir()
@@ -594,7 +599,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 payload = json.loads(body.decode("utf-8"))
                 timecode = payload.get("timecode", "00:00:00")
                 name = payload.get("name", "")
-                marker = session.add_marker(timecode, name)
+                paused = payload.get("paused", session.paused)
+                marker = session.add_marker(timecode, name, paused=bool(paused))
                 self.send_json({
                     "success": True, 
                     "marker": marker,
@@ -647,6 +653,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                             session.save_config()
                     except Exception:
                         pass
+                if "paused" in payload:
+                    session.paused = bool(payload["paused"])
                 self.send_json({
                     "success": True,
                     "recording_dir": session.recording_dir,
@@ -654,7 +662,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "base_dir": str(session.get_base_dir()),
                     "fps_num": session.fps_num,
                     "fps_den": session.fps_den,
-                    "fps": session.get_fps_float()
+                    "fps": session.get_fps_float(),
+                    "paused": session.paused
                 })
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)

@@ -420,6 +420,7 @@
   let lastFreezeHandledAt = 0;
   let pendingFreeze = false;
   let wsAuthRequired = false;
+  let isPaused = false;
   let currentFpsNum = 60;
   let currentFpsDen = 1;
 
@@ -501,7 +502,7 @@
   // --- CLOCK ICON BUTTON (CLICK IN UI) ---
   // Clicking the UI clock button freezes the timestamp WITHOUT triggering the blue sensory flash
   function handleClockClick() {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
     applyFreezeState();
   }
 
@@ -509,7 +510,7 @@
   // Keybind note trigger: fires the Electric Cyan #00d2ff blue sensory flash
   // Debounced to 300ms so dock F8 keydown + server flag poll don't double-fire.
   function handleKeybindFreeze() {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
     const now = Date.now();
     if (now - lastFreezeHandledAt < 300) return;
     lastFreezeHandledAt = now;
@@ -675,10 +676,12 @@
   function commitMarker(time, desc) {
     // Only show Saved!/Undo after the server confirms the write.
     // On failure show a transient error placeholder instead of fake success.
+    // Paused flag travels for diagnostics; exports stay timecode-only.
+    const wasPaused = isPaused;
     fetch("/api/save_marker", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ timecode: time, name: desc })
+      body: JSON.stringify({ timecode: time, name: desc, paused: wasPaused })
     })
     .then(res => res.json())
     .then(data => {
@@ -765,17 +768,20 @@
   // --- OBS WEBSOCKET & RECORDING STATE ---
   function setRecordingUIState(recording) {
     isRecording = recording;
+    if (!recording) {
+      setPausedUIState(false, true);
+    }
     const btnClock = document.getElementById('btnClock');
     const input = document.getElementById('dockInput');
 
     if (recording) {
       document.body.classList.add('recording');
-      btnClock.disabled = false;
+      btnClock.disabled = isPaused;
       input.disabled = false;
       if (!isSavedActive) {
-        input.placeholder = 'Description...';
+        input.placeholder = isPaused ? 'Paused - time held...' : 'Description...';
       }
-      input.title = '';
+      input.title = isPaused ? 'Recording paused - resume to grab fresh timecode' : '';
       updateMarkerCounter();
     } else {
       document.body.classList.remove('recording');
@@ -788,6 +794,33 @@
       clearSavedInputFeedback();
       updateMarkerCounter();
     }
+    updateUIStates();
+  }
+
+  function setPausedUIState(paused, silent) {
+    if (isPaused === paused) return;
+    isPaused = paused;
+    if (!silent) {
+      fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paused: paused })
+      }).catch(() => {});
+    }
+    if (!isRecording) return;
+    const btnClock = document.getElementById('btnClock');
+    const input = document.getElementById('dockInput');
+    btnClock.disabled = paused;
+    if (!isSavedActive) {
+      input.placeholder = paused ? 'Paused - time held...' : 'Description...';
+    }
+    input.title = paused ? 'Recording paused - resume to grab fresh timecode' : '';
+    if (paused) {
+      pendingFreeze = false;
+    } else {
+      queryRecordStatus();
+    }
+    updateFpsTooltip();
     updateUIStates();
   }
 
@@ -824,14 +857,21 @@
           }
           if (msg.op === 5 && msg.d.eventType === "RecordStateChanged") {
             const active = !!msg.d.eventData.outputActive;
+            const state = (msg.d.eventData.outputState || "").toUpperCase();
             setRecordingUIState(active);
             if (!active) {
               fetch("/api/reset_session", { method: "POST" }).catch(() => {});
               savedMarkersCount = 0;
               updateMarkerCounter();
             } else {
+              if (state.indexOf("PAUSED") !== -1) {
+                setPausedUIState(true);
+              } else if (state.indexOf("RESUMED") !== -1 || state.indexOf("STARTED") !== -1) {
+                setPausedUIState(false);
+              }
               queryRecordDirectory();
               queryVideoSettings();
+              queryRecordStatus();
             }
           }
           if (msg.op === 7 && msg.d.requestType === "GetRecordStatus" && msg.d.responseData) {
@@ -839,9 +879,18 @@
             if (isRecording !== active) {
               setRecordingUIState(active);
             }
+            if (typeof msg.d.responseData.outputPaused === "boolean") {
+              setPausedUIState(msg.d.responseData.outputPaused);
+            }
             if (active && msg.d.responseData.outputTimecode) {
+              // While paused the timecode stalls at the pause point; keep it
+              // but do not treat the stall as a fresh freeze.
               currentRecordingTimecode = msg.d.responseData.outputTimecode.split(".")[0];
-              applyFreshFreeze(currentRecordingTimecode);
+              if (!isPaused) {
+                applyFreshFreeze(currentRecordingTimecode);
+              } else {
+                pendingFreeze = false;
+              }
             } else {
               pendingFreeze = false;
             }
