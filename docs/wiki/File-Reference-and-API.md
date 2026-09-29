@@ -28,7 +28,7 @@ Silent background daemon listening on `127.0.0.1:8765` using Python standard lib
 #### Architecture & Flow
 1. Receives timecode freeze events from `marker_service.lua` via `freeze_trigger.flag` file watcher.
 2. Accepts HTTP REST requests from the browser dock (`index.html`) for saving markers, undoing actions, resetting sessions, and folder discovery.
-3. Simultaneously serializes marker entries into four formats (`markers.txt`, `markers.csv`, `premiere_sequence.xml`, `final_cut_pro.fcpxml`).
+3. Simultaneously serializes marker entries into five formats (`markers.txt`, `markers.csv`, `premiere_sequence.xml`, `final_cut_pro.fcpxml`, `markers.json`).
 4. Executes atomic directory cleanup if all markers in a session are undone.
 
 #### Key Classes & Methods
@@ -40,7 +40,7 @@ Silent background daemon listening on `127.0.0.1:8765` using Python standard lib
   - `add_marker(timecode, name)`: Converts timecode string to seconds and 60fps frames, appends to in-memory list, and triggers `flush_files()`.
   - `undo_last_marker()`: Removes the latest marker. If marker count drops to zero, invokes `cleanup_session_files()`.
   - `reset_session()`: Finalizes current session state when OBS stops recording.
-  - `flush_files()`: Simultaneously writes TXT, CSV, Premiere XML, and FCPXML files.
+  - `flush_files()`: Simultaneously writes TXT, CSV, Premiere XML, FCPXML, and JSON files.
   - XML names are escaped with `xml.sax.saxutils.escape` so `&`, `<`, `>` and quotes cannot break NLE imports.
   - `parse_timecode()`: Parses `HH:MM:SS[.ms]`, `MM:SS[.ms]`, `SS[.ms]` and `HH:MM:SS:FF` into seconds + 60fps frames.
   - `cleanup_session_files()`: Resilient 4-phase deletion routine (force `gc.collect()`, strip read-only attributes, unlink files, remove folder).
@@ -60,7 +60,7 @@ Silent background daemon listening on `127.0.0.1:8765` using Python standard lib
 - **Idea 3: WebSocket Event Push**: Replace HTTP polling from dock with a lightweight WebSocket event stream directly from the Python daemon.
 
 #### Pros & Cons of Current Implementation
-- Pros: Zero external dependencies; starts in under 15ms; consumes under 12MB RAM; robust against Windows file locks; simultaneous 4-format output.
+- Pros: Zero external dependencies; starts in under 15ms; consumes under 12MB RAM; robust against Windows file locks; simultaneous 5-format output.
 - Cons: Fixed 60fps frame calculations; requires polling loop on frontend instead of native server push.
 
 ---
@@ -201,7 +201,7 @@ Returns current session state, marker count, recording directories, and latest f
 ---
 
 ### `POST /api/save_marker`
-Saves a new marker at the specified timecode and flushes all 4 export files.
+Saves a new marker at the specified timecode and flushes all 5 export files.
 
 #### Request Body
 ```json

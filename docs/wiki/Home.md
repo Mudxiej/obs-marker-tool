@@ -24,7 +24,7 @@ The tool operates as a decoupled three-tier system:
 | :--- | :--- | :--- | :--- |
 | **Presentation** | Custom Browser Dock (`src/index.html`) | OBS CEF (Chromium Embedded Framework) | Ultra-compact dock UI (22px row + 18px chips), WebSocket v5 timecode sync, preset management, undo triggers |
 | **Native Integration** | Lua Service Hook (`src/marker_service.lua`) | OBS Lua Scripting Engine | Automatic daemon lifecycle management, native settings properties, anti-cheat safe hotkey registration |
-| **Backend & Export** | HTTP Server Daemon (`src/server.py`) | Python Standard Library (`pythonw.exe`) | Lock-free file flag monitoring, REST API on `127.0.0.1:8765`, atomic 4-format file serialization, resilient folder purging |
+| **Backend & Export** | HTTP Server Daemon (`src/server.py`) | Python Standard Library (`pythonw.exe`) | Lock-free file flag monitoring, REST API on `127.0.0.1:8765`, atomic 5-format file serialization, resilient folder purging |
 
 ---
 

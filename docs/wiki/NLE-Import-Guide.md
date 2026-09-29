@@ -6,14 +6,15 @@ Step-by-step instructions for importing OBS Marker Tool files into Adobe Premier
 
 ## 1. Export Files Overview
 
-Every marker session generates four simultaneous export files located in `Markers_YYYY-MM-DD_HH-MM-SS`:
+Every marker session generates five simultaneous export files located in `Markers_YYYY-MM-DD_HH-MM-SS` (or `Markers_<video-stem>` in video-naming mode):
 
 | File Name | Primary Compatibility | Format Specification |
 | :--- | :--- | :--- |
-| `premiere_sequence.xml` | Adobe Premiere Pro, DaVinci Resolve, Avid | FCP 7 XML Interchange format (`<xmeml version="5">`). Automatically builds a 60fps sequence populated with native timeline markers. |
+| `premiere_sequence.xml` | Adobe Premiere Pro, DaVinci Resolve, Avid | FCP 7 XML Interchange format (`<xmeml version="5">`). Automatically builds a sequence at the detected OBS framerate populated with native timeline markers. |
 | `final_cut_pro.fcpxml` | Apple Final Cut Pro X, DaVinci Resolve | Final Cut Pro XML format (`<fcpxml version="1.9">`). Generates an event and project with exact frame-accurate markers. |
 | `markers.csv` | DaVinci Resolve, Adobe Premiere Pro | Comma-separated marker list (`Marker Name`, `Description`, `In`, `Out`, `Duration`) with RFC 4180 quotes. |
 | `markers.txt` | YouTube Video Descriptions, Markdown Notes | Human-readable timestamp list with an auto-prepended `00:00:00 - Intro` anchor conforming to YouTube chapter requirements. |
+| `markers.json` | Automation (MoviePy, Resolve Python API, bots) | Structured timeline (`recording_session`, `fps`, `markers[{id, timecode, seconds, frame, name, label, paused}]`) with UTF-8 names preserved. |
 
 ---
 
@@ -94,4 +95,4 @@ YouTube automatically converts timestamps in video descriptions into scrubbable 
 
 ### Accidental Marker Rollback
 - If an accidental keypress occurs, tap the Red Undo button in the dock within 5 seconds.
-- Undoing the last marker immediately removes its record from all 4 files. If zero markers remain, the folder is completely purged from disk.
+- Undoing the last marker immediately removes its record from all 5 files. If zero markers remain, the folder is completely purged from disk.

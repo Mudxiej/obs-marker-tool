@@ -50,7 +50,7 @@ When you are live streaming or recording, you are completely in the moment. When
 | :--- | :--- | :--- |
 | **1. 100% Inside OBS** | Embedded ultra-compact browser dock + automated background Lua daemon. Starts and stops silently with OBS. | Zero third-party windows to manage. Doesn't steal screen real estate from audio meters or stream preview. |
 | **2. Blind Hotkey Trigger** | Tap `hotkey` mid-game to freeze exact timecode. Fires a subtle Electric Cyan flash. | Never alt-tab or take your eyes off the match. Instant visual confirmation that the moment is captured. |
-| **3. Instant NLE Import** | Simultaneously exports `premiere_sequence.xml`, `final_cut_pro.fcpxml`, and `markers.csv` next to video file. | Drag sequence into Premiere or FCP; all markers, names, and timecodes appear directly on the timeline. Zero scrubbing. |
+| **3. Instant NLE Import** | Simultaneously exports `premiere_sequence.xml`, `final_cut_pro.fcpxml`, `markers.csv`, and `markers.json` next to video file. | Drag sequence into Premiere or FCP; all markers, names, and timecodes appear directly on the timeline. Zero scrubbing. |
 | **4. Mistake-Proof Undo** | Contextual Red Undo button active for 5 seconds after any save. | Accidental presses can be reverted with 1 click. If 0 markers remain, auto-purges empty files from disk. |
 | **5. Dark-Room Ergonomics** | Low-contrast Muted Sage save frame + ghost text. One-click preset chips (`Ace`, `Clutch`, `Funny`, `Dono`, `Whiff`) with right-click to delete. | Zero peripheral glare or eye strain on stream. Quick tagging without typing; manage presets with a single click. |
 | **6. Auto YouTube Chapters** | Generates `markers.txt` starting with an automatic `00:00:00 - Intro` anchor. | Copy and paste directly into YouTube video descriptions to activate scrubbable chapters instantly. |
@@ -70,6 +70,7 @@ flowchart TD
     D --> F[markers.csv]
     D --> G[premiere_sequence.xml]
     D --> H[final_cut_pro.fcpxml]
+    D --> I[markers.json]
 ```
 
 ---
