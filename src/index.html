@@ -421,6 +421,9 @@
   let pendingFreeze = false;
   let wsAuthRequired = false;
   let isPaused = false;
+  let isResuming = false;
+  let resumeFallbackTimer = null;
+  let pausedWarnTimer = null;
   let currentFpsNum = 60;
   let currentFpsDen = 1;
 
@@ -464,6 +467,7 @@
   // Electric Cyan #00d2ff (60ms attack / 1200ms decay / 85% opacity)
   function triggerFreezeFlash() {
     const overlay = document.getElementById('dockFreezeOverlay');
+    overlay.style.background = '';
     overlay.style.transition = 'opacity 60ms ease-in';
     overlay.style.opacity = '0.85';
 
@@ -471,6 +475,38 @@
       overlay.style.transition = 'opacity 1200ms ease-out';
       overlay.style.opacity = '0';
     }, 60);
+  }
+
+  // --- AMBER PAUSED WARNING FLASH (F8 while recording is paused) ---
+  // Same attack/decay envelope as the cyan flash so it reads instantly
+  // in peripheral vision, but unmistakably amber (#f59e0b). Fires WITHOUT
+  // capturing any timestamp.
+  function triggerPausedWarning() {
+    const overlay = document.getElementById('dockFreezeOverlay');
+    overlay.style.background = 'rgba(245, 158, 11, 0.8)';
+    overlay.style.transition = 'opacity 60ms ease-in';
+    overlay.style.opacity = '0.8';
+
+    setTimeout(() => {
+      overlay.style.transition = 'opacity 1200ms ease-out';
+      overlay.style.opacity = '0';
+      setTimeout(() => { overlay.style.background = ''; }, 1300);
+    }, 60);
+
+    const input = document.getElementById('dockInput');
+    if (input && !isSavedActive) {
+      const prevPh = input.placeholder;
+      const prevTitle = input.title;
+      input.placeholder = 'Cannot capture - recording is paused';
+      input.title = 'Resume recording to capture markers';
+      clearTimeout(pausedWarnTimer);
+      pausedWarnTimer = setTimeout(() => {
+        if (input.placeholder === 'Cannot capture - recording is paused') {
+          input.placeholder = isRecording ? 'Paused - time held...' : prevPh;
+          input.title = isRecording ? 'Recording paused - resume to grab fresh timecode' : prevTitle;
+        }
+      }, 1800);
+    }
   }
 
   // --- GREEN FRAME & "Saved!" GHOST TEXT FEEDBACK ON SAVE ---
@@ -509,8 +545,17 @@
   // --- KEYBIND FREEZE (F8 / IN-GAME GLOBAL HOTKEY) ---
   // Keybind note trigger: fires the Electric Cyan #00d2ff blue sensory flash
   // Debounced to 300ms so dock F8 keydown + server flag poll don't double-fire.
+  // While paused the press is NOT captured; an amber warning flashes instead
+  // so the streamer knows to resume (no silent black hole).
   function handleKeybindFreeze() {
-    if (!isRecording || isPaused) return;
+    if (!isRecording) return;
+    if (isPaused) {
+      const nowWarn = Date.now();
+      if (nowWarn - lastFreezeHandledAt < 300) return;
+      lastFreezeHandledAt = nowWarn;
+      triggerPausedWarning();
+      return;
+    }
     const now = Date.now();
     if (now - lastFreezeHandledAt < 300) return;
     lastFreezeHandledAt = now;
@@ -519,6 +564,24 @@
   }
 
   function applyFreezeState(fromHotkey) {
+    // If we just resumed, currentRecordingTimecode is still the pre-pause
+    // value until the async GetRecordStatus round-trip lands. Defer the lock
+    // so a press within ~50-150ms of resume cannot stage minutes-old time.
+    if (isResuming) {
+      pendingFreeze = true;
+      queryRecordStatus();
+      const btnR = document.getElementById('btnClock');
+      btnR.classList.add('picked');
+      btnR.title = 'Syncing timecode...';
+      document.getElementById('iconClockPlus').style.display = 'none';
+      document.getElementById('iconClockCheck').style.display = 'block';
+      updateUIStates();
+      const inputR = document.getElementById('dockInput');
+      if (inputR && !inputR.disabled) {
+        inputR.focus();
+      }
+      return;
+    }
     // Request a fresh timecode, then freeze when the response arrives.
     // Falls back to last known timecode immediately so UI feels instant.
     pendingFreeze = true;
@@ -799,6 +862,7 @@
 
   function setPausedUIState(paused, silent) {
     if (isPaused === paused) return;
+    const wasPaused = isPaused;
     isPaused = paused;
     if (!silent) {
       fetch("/api/config", {
@@ -807,7 +871,11 @@
         body: JSON.stringify({ paused: paused })
       }).catch(() => {});
     }
-    if (!isRecording) return;
+    if (!isRecording) {
+      clearTimeout(resumeFallbackTimer);
+      isResuming = false;
+      return;
+    }
     const btnClock = document.getElementById('btnClock');
     const input = document.getElementById('dockInput');
     btnClock.disabled = paused;
@@ -817,7 +885,14 @@
     input.title = paused ? 'Recording paused - resume to grab fresh timecode' : '';
     if (paused) {
       pendingFreeze = false;
-    } else {
+      clearTimeout(resumeFallbackTimer);
+      isResuming = false;
+    } else if (wasPaused) {
+      // Just resumed: timecode is stale until the async status round-trip
+      // lands. Hold a short resuming guard so freezes defer to fresh time.
+      isResuming = true;
+      clearTimeout(resumeFallbackTimer);
+      resumeFallbackTimer = setTimeout(() => { isResuming = false; }, 1500);
       queryRecordStatus();
     }
     updateFpsTooltip();
@@ -887,6 +962,12 @@
               // but do not treat the stall as a fresh freeze.
               currentRecordingTimecode = msg.d.responseData.outputTimecode.split(".")[0];
               if (!isPaused) {
+                // Fresh post-resume timecode arrived: release the guard so
+                // deferred freezes lock the live value, not the pause point.
+                if (isResuming) {
+                  isResuming = false;
+                  clearTimeout(resumeFallbackTimer);
+                }
                 applyFreshFreeze(currentRecordingTimecode);
               } else {
                 pendingFreeze = false;
