@@ -47,6 +47,25 @@ CONFIG_FILE = SCRIPT_DIR / "config.json"
 FLAG_FILE = SCRIPT_DIR / "freeze_trigger.flag"
 
 
+def valid_fps(num, den):
+    """Validate an OBS fps ratio (e.g. 60/1, 60000/1001).
+
+    OBS reports NTSC rates as full ratios, so the numerator alone can be
+    60000. Validate the calculated rate instead of the raw numerator.
+    """
+    try:
+        num_i, den_i = int(num), int(den)
+    except Exception:
+        return False
+    if not (1 <= den_i <= 10000 and num_i >= 1):
+        return False
+    try:
+        fps = num_i / den_i
+    except Exception:
+        return False
+    return 1 <= fps <= 240
+
+
 def atomic_write_text(path, content):
     """Crash-safe write: temp file in same dir + fsync + os.replace.
 
@@ -66,7 +85,24 @@ def atomic_write_text(path, content):
                 os.fsync(f.fileno())
             except Exception:
                 pass
-        os.replace(tmp_name, target)
+        # Windows: Search indexer / AV can briefly lock the .tmp on close.
+        # Retry the rename a few times before giving up.
+        last_err = None
+        for attempt in range(3):
+            try:
+                os.replace(tmp_name, target)
+                last_err = None
+                break
+            except PermissionError as e:
+                last_err = e
+                time.sleep(0.025)
+            except OSError as e:
+                # WinError 32/5 surface as PermissionError on py3.8+,
+                # but be tolerant of any transient lock error.
+                last_err = e
+                time.sleep(0.025)
+        if last_err is not None:
+            raise last_err
         try:
             # Sync directory entry so the rename survives power loss
             dir_fd = os.open(str(target.parent), os.O_RDONLY)
@@ -111,7 +147,7 @@ class MarkerSession:
                     try:
                         num = int(data.get("fps_num", 60))
                         den = int(data.get("fps_den", 1))
-                        if 1 <= num <= 240 and 1 <= den <= 10000:
+                        if valid_fps(num, den):
                             self.fps_num, self.fps_den = num, den
                     except Exception:
                         pass
@@ -291,33 +327,21 @@ class MarkerSession:
         atomic_write_text(self.txt_path, "\n".join(txt_content) + "\n")
 
         # 2. Premiere Pro CSV Export (HH:MM:SS:FF at detected fps)
+        # Derived from stored total frames so sub-second fractions roll over
+        # correctly (00:01:23.999 @60fps -> 00:01:24:00, not 00:01:23:00).
         csv_rows = ["Marker Name,Description,In,Out,Duration"]
+        tb = max(timebase, 1)
         for m in self.markers:
-            tc = (m['timecode'] or "").strip()
-            # Normalize to HH:MM:SS for CSV; strip frame suffix if present
-            parts = tc.split(":")
-            if len(parts) == 2:
-                tc = "00:" + tc
-            elif len(parts) == 4:
-                tc = ":".join(parts[:3])
-            elif len(parts) == 1:
-                tc = f"00:00:{parts[0]}"
-            # Frames from fractional seconds at detected fps (00:01:23.456 -> :27 at 60fps)
-            ff = 0
-            if "." in tc:
-                try:
-                    frac = float("0." + tc.split(".")[1].rstrip("s"))
-                    ff = int(round(frac * fps_f)) % max(timebase, 1)
-                except Exception:
-                    ff = 0
-                tc = tc.split(".")[0]
-            else:
-                # Reuse stored seconds for exact FF when timecode lacks ms
-                try:
-                    ff = int(round((float(m.get("seconds", 0)) % 1) * fps_f)) % max(timebase, 1)
-                except Exception:
-                    ff = 0
-            tc_frames = f"{tc}:{ff:02d}"
+            try:
+                total_frames = int(m.get("frame_in", 0))
+                ff = total_frames % tb
+                total_sec = total_frames // tb
+                ss = total_sec % 60
+                mm = (total_sec // 60) % 60
+                hh = total_sec // 3600
+                tc_frames = f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
+            except Exception:
+                tc_frames = "00:00:00:00"
             safe_name = m['name'].replace('"', '""')
             csv_rows.append(f'"{safe_name}","{safe_name}",{tc_frames},{tc_frames},00:00:00:00')
 
@@ -362,6 +386,10 @@ class MarkerSession:
         atomic_write_text(self.xml_path, "\n".join(xml_lines) + "\n")
 
         # 4. Final Cut Pro FCPXML Export
+        # All time values use the format's rational timescale (num/den) so
+        # every start/duration is an exact multiple of frameDuration
+        # (FCPXML DTD v1.9 frame-boundary rule). E.g. 59.94fps marker 3596
+        # becomes 3596*1001/60000s, not 3596/60s.
         fps_label = f"{fps_f:.2f}".rstrip("0").rstrip(".")
         fcpxml_lines = [
             '<?xml version="1.0" encoding="UTF-8"?>',
@@ -381,13 +409,13 @@ class MarkerSession:
         total_fcpxml_frames = int(round(max_sec * fps_f))
 
         fcpxml_lines.extend([
-            f'            <gap name="Timeline" offset="0s" duration="{total_fcpxml_frames}/{timebase}s" start="0s">'
+            f'            <gap name="Timeline" offset="0s" duration="{total_fcpxml_frames * self.fps_den}/{self.fps_num}s" start="0s">'
         ])
 
         for m in self.markers:
             safe_attr = xml_escape(m["name"], {'"': '&quot;'})
             fcpxml_lines.append(
-                f'              <marker start="{m["frame_in"]}/{timebase}s" duration="1/{timebase}s" value="{safe_attr}"/>'
+                f'              <marker start="{m["frame_in"] * self.fps_den}/{self.fps_num}s" duration="{self.fps_den}/{self.fps_num}s" value="{safe_attr}"/>'
             )
 
         fcpxml_lines.extend([
@@ -642,7 +670,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     try:
                         num = int(payload.get("fps_num", session.fps_num))
                         den = int(payload.get("fps_den", session.fps_den))
-                        if 1 <= num <= 240 and 1 <= den <= 10000:
+                        if valid_fps(num, den):
                             session.fps_num, session.fps_den = num, den
                             session.save_config()
                     except Exception:

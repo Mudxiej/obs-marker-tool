@@ -859,7 +859,9 @@
           if (msg.op === 7 && msg.d.requestType === "GetVideoSettings" && msg.d.responseData) {
             const num = parseInt(msg.d.responseData.fpsNumerator, 10);
             const den = parseInt(msg.d.responseData.fpsDenominator, 10);
-            if (num > 0 && num <= 240 && den > 0 && den <= 10000) {
+            // OBS reports NTSC as full ratios (60000/1001); validate the rate.
+            const fps = (den > 0) ? num / den : NaN;
+            if (Number.isFinite(fps) && fps >= 1 && fps <= 240 && den >= 1 && den <= 10000) {
               currentFpsNum = num;
               currentFpsDen = den;
               updateFpsTooltip();
