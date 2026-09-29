@@ -806,6 +806,28 @@
   }
 
   // --- PRESETS & RIGHT CLICK DELETION ---
+  // Source of truth is server presets.json (survives reinstalls/profiles);
+  // localStorage stays as an offline cache.
+  function syncPresetsToServer() {
+    fetch("/api/presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ presets: userPresets })
+    }).catch(() => {});
+  }
+
+  function loadPresetsFromServer() {
+    fetch("/api/presets")
+      .then(res => res.json())
+      .then(data => {
+        if (data && Array.isArray(data.presets) && data.presets.length > 0) {
+          userPresets = data.presets;
+          renderChips();
+        }
+      })
+      .catch(() => {});
+  }
+
   function renderChips() {
     const container = document.getElementById('chipContainer');
     container.innerHTML = '';
@@ -846,6 +868,7 @@
         if (val && !userPresets.includes(val)) {
           userPresets.push(val);
           renderChips();
+          syncPresetsToServer();
         }
         revertMorph();
       } else if (e.key === 'Escape') {
@@ -866,6 +889,7 @@
   function deleteTag(idx) {
     userPresets.splice(idx, 1);
     renderChips();
+    syncPresetsToServer();
   }
 
   // --- OBS WEBSOCKET & RECORDING STATE ---
@@ -1157,6 +1181,7 @@
 
   // Init
   renderChips();
+  loadPresetsFromServer();
   initObsWebSocket();
   pollServerSync();
 </script>
