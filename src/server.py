@@ -45,6 +45,10 @@ def _resolve_desktop_dir():
 DESKTOP_DIR = _resolve_desktop_dir()
 CONFIG_FILE = SCRIPT_DIR / "config.json"
 FLAG_FILE = SCRIPT_DIR / "freeze_trigger.flag"
+PRESETS_FILE = SCRIPT_DIR / "presets.json"
+DEFAULT_PRESETS = ["Ace", "Clutch", "Funny", "Dono", "Whiff"]
+MAX_PRESETS = 30
+MAX_PRESET_LEN = 24
 
 
 def valid_fps(num, den):
@@ -144,6 +148,49 @@ def parse_export_bool(value, default=True):
         if v in ("0", "false", "no", "off"):
             return False
     return default
+
+
+def normalize_presets(value):
+    """Validate a preset list: 1-24 char strings, max 30, de-dupe in order."""
+    if not isinstance(value, list):
+        raise ValueError("presets must be a JSON array of strings")
+    cleaned = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        tag = item.strip()
+        if not tag or len(tag) > MAX_PRESET_LEN or tag in seen:
+            continue
+        seen.add(tag)
+        cleaned.append(tag)
+        if len(cleaned) >= MAX_PRESETS:
+            break
+    if not cleaned:
+        raise ValueError("presets must contain at least one non-empty tag")
+    return cleaned
+
+
+def load_presets():
+    """Read presets.json, auto-initializing with defaults on first load."""
+    if not PRESETS_FILE.exists():
+        try:
+            atomic_write_text(PRESETS_FILE, json.dumps(DEFAULT_PRESETS, indent=2, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        return list(DEFAULT_PRESETS)
+    try:
+        with open(PRESETS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return normalize_presets(data)
+    except Exception:
+        return list(DEFAULT_PRESETS)
+
+
+def save_presets(presets):
+    cleaned = normalize_presets(presets)
+    atomic_write_text(PRESETS_FILE, json.dumps(cleaned, indent=2, ensure_ascii=False) + "\n")
+    return cleaned
 
 
 class MarkerSession:
@@ -929,6 +976,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "export_fcpxml": session.export_fcpxml,
                 "export_json": session.export_json
             })
+        elif parsed.path == "/api/presets":
+            try:
+                self.send_json({"presets": load_presets()})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=500)
         elif parsed.path == "/api/open_folder":
             if session.flat_mode and session.flat_path:
                 target = Path(session.flat_path).parent
@@ -1053,6 +1105,21 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "export_fcpxml": session.export_fcpxml,
                     "export_json": session.export_json
                 })
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=500)
+
+        elif parsed.path == "/api/presets":
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+                if "presets" not in payload:
+                    self.send_json({"success": False, "error": "missing presets array"}, status=400)
+                    return
+                try:
+                    cleaned = save_presets(payload["presets"])
+                except ValueError as ve:
+                    self.send_json({"success": False, "error": str(ve)}, status=400)
+                    return
+                self.send_json({"success": True, "presets": cleaned})
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)
 
