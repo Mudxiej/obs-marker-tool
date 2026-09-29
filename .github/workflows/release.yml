@@ -1,0 +1,35 @@
+name: Release ZIP
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-zip:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Python syntax
+        run: python -m py_compile src/server.py scripts/sync_wiki.py
+
+      - name: Build release archive
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag) { $tag = "dev" }
+          $zip = "obs-marker-tool_$tag.zip"
+          Compress-Archive -Path src/* -DestinationPath $zip -Force
+          Get-ChildItem $zip
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: obs-marker-tool_*.zip
+          generate_release_notes: true

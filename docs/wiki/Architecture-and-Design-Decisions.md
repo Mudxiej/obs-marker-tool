@@ -52,7 +52,7 @@ Gaming streamers and content creators operate under heavy cognitive load, often 
 - **Ergonomic Rationale**: The streamer's eyes remain locked onto their crosshair or gameplay. The high-luminance cyan tint reflects in peripheral vision, confirming the marker timestamp was captured without requiring them to glance over at OBS.
 - **Key Detail**: UI mouse clicks on the clock button freeze the timestamp cleanly without triggering this flash, preventing visual fatigue during manual editing.
 
-### Muted Sage Save Feedback (`#22c55e`)
+### Muted Sage Save Feedback (`#2e5c46` border / `#5ea87f` ghost text)
 - **Trigger**: Marker saved via Enter, Save button, or Preset chip.
 - **Visual Feedback**: The text input field transitions its border to a soft muted sage tint, accompanied by a `"Saved!"` placeholder text.
 - **Duration**: Remains visible for 5 seconds, followed by a 500ms fade back to default.

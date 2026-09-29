@@ -10,11 +10,17 @@ echo.
 
 where python >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo [WARNING] Python 3.8+ was not detected in PATH!
-    echo           The marker server daemon requires Python to run.
-    echo           Please install Python from https://www.python.org/
-    echo           and check "Add python.exe to PATH" during installation.
-    echo.
+    where pythonw >nul 2>&1
+    if !ERRORLEVEL! NEQ 0 (
+        where py >nul 2>&1
+        if !ERRORLEVEL! NEQ 0 (
+            echo [WARNING] Python 3.8+ was not detected in PATH!
+            echo           The marker server daemon requires Python to run.
+            echo           Please install Python from https://www.python.org/
+            echo           and check "Add python.exe to PATH" during installation.
+            echo.
+        )
+    )
 )
 
 set "TARGET_DIR=%APPDATA%\obs-studio\scripts\obs-marker-tool"

@@ -416,7 +416,10 @@
   let obsSocket = null;
   const WS_PORTS = [4456, 4455];
   let portIndex = 0;
-  let lastKnownFreezeTime = 0;
+  let lastKnownFreezeTime = null;
+  let lastFreezeHandledAt = 0;
+  let pendingFreeze = false;
+  let wsAuthRequired = false;
 
   // Presets in localStorage
   let userPresets = JSON.parse(localStorage.getItem('obs_marker_chips_v5') || '["Ace", "Clutch", "Funny", "Dono", "Whiff"]');
@@ -487,13 +490,20 @@
 
   // --- KEYBIND FREEZE (F8 / IN-GAME GLOBAL HOTKEY) ---
   // Keybind note trigger: fires the Electric Cyan #00d2ff blue sensory flash
+  // Debounced to 300ms so dock F8 keydown + server flag poll don't double-fire.
   function handleKeybindFreeze() {
     if (!isRecording) return;
+    const now = Date.now();
+    if (now - lastFreezeHandledAt < 300) return;
+    lastFreezeHandledAt = now;
     triggerFreezeFlash();
-    applyFreezeState();
+    applyFreezeState(true);
   }
 
-  function applyFreezeState() {
+  function applyFreezeState(fromHotkey) {
+    // Request a fresh timecode, then freeze when the response arrives.
+    // Falls back to last known timecode immediately so UI feels instant.
+    pendingFreeze = true;
     queryRecordStatus();
     selectedTimestamp = currentRecordingTimecode;
 
@@ -510,6 +520,17 @@
     if (input && !input.disabled) {
       input.focus();
     }
+  }
+
+  function applyFreshFreeze(timecode) {
+    if (!pendingFreeze) return;
+    pendingFreeze = false;
+    if (!timecode) return;
+    selectedTimestamp = timecode;
+    const btn = document.getElementById('btnClock');
+    btn.classList.add('picked');
+    btn.title = `Time frozen: ${timecode} (click to re-grab)`;
+    updateUIStates();
   }
 
   function resetClockButton() {
@@ -635,9 +656,8 @@
   }
 
   function commitMarker(time, desc) {
-    // Green flash overlay removed: replaced with green frame on text field + Saved! placeholder
-    triggerUndoState();
-
+    // Only show Saved!/Undo after the server confirms the write.
+    // On failure show a transient error placeholder instead of fake success.
     fetch("/api/save_marker", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -648,10 +668,17 @@
       if (data.success) {
         savedMarkersCount = data.count || (savedMarkersCount + 1);
         updateMarkerCounter();
+        triggerUndoState();
+      } else {
+        throw new Error(data.error || "save failed");
       }
     })
     .catch(err => {
       console.error("Save error:", err);
+      const input = document.getElementById('dockInput');
+      const prev = input.placeholder;
+      input.placeholder = 'Save failed - retry';
+      setTimeout(() => { if (input.placeholder === 'Save failed - retry') input.placeholder = prev; }, 2000);
     });
   }
 
@@ -686,7 +713,7 @@
 
   function morphToInput() {
     const wrap = document.getElementById('tagMorphWrap');
-    wrap.innerHTML = `<input type="text" id="morphInput" class="input-tag-morph" placeholder="Tag..." maxlength="10">`;
+    wrap.innerHTML = `<input type="text" id="morphInput" class="input-tag-morph" placeholder="Tag..." maxlength="24">`;
     const input = document.getElementById('morphInput');
     input.focus();
 
@@ -753,12 +780,26 @@
       obsSocket = new WebSocket(`ws://127.0.0.1:${port}`);
 
       obsSocket.onopen = () => {
+        wsAuthRequired = false;
         obsSocket.send(JSON.stringify({ op: 1, d: { rpcVersion: 1, eventSubscriptions: 65 } }));
       };
 
       obsSocket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (msg.op === 0) {
+            // Hello: if OBS requires authentication we cannot proceed without a password.
+            if (msg.d && msg.d.authentication) {
+              wsAuthRequired = true;
+              const input = document.getElementById('dockInput');
+              if (input && !isRecording) {
+                input.placeholder = 'Enable WS without password (Tools > WebSocket)';
+                input.title = 'OBS WebSocket requires a password. Disable authentication in OBS Tools > WebSocket Server Settings, or add password support.';
+              }
+              try { obsSocket.close(); } catch (e) {}
+              return;
+            }
+          }
           if (msg.op === 2) {
             queryRecordStatus();
             queryRecordDirectory();
@@ -781,6 +822,9 @@
             }
             if (active && msg.d.responseData.outputTimecode) {
               currentRecordingTimecode = msg.d.responseData.outputTimecode.split(".")[0];
+              applyFreshFreeze(currentRecordingTimecode);
+            } else {
+              pendingFreeze = false;
             }
           }
           if (msg.op === 7 && msg.d.requestType === "GetRecordDirectory" && msg.d.responseData) {
@@ -842,11 +886,19 @@
           updateUIStates();
         }
 
-        // Global hotkey trigger detection
-        if (data.freeze_event && data.freeze_event > lastKnownFreezeTime) {
-          if (lastKnownFreezeTime > 0 && isRecording) {
-            handleKeybindFreeze();
+        // Global hotkey trigger detection.
+        // First poll establishes a baseline without firing, so the very first
+        // real F8 press is not swallowed.
+        if (typeof data.freeze_event === "number" && data.freeze_event > 0) {
+          if (lastKnownFreezeTime === null) {
+            lastKnownFreezeTime = data.freeze_event;
+          } else if (data.freeze_event > lastKnownFreezeTime) {
+            lastKnownFreezeTime = data.freeze_event;
+            if (isRecording) {
+              handleKeybindFreeze();
+            }
           }
+        } else if (lastKnownFreezeTime === null && typeof data.freeze_event === "number") {
           lastKnownFreezeTime = data.freeze_event;
         }
       })
