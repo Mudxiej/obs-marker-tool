@@ -432,6 +432,43 @@
   let staleFallbackTimer = null;
   let currentFpsNum = 60;
   let currentFpsDen = 1;
+  // Daemon port discovery: the dock is normally same-origin
+  // (http://127.0.0.1:<port>/), so apiBase stays "". Under file:///
+  // (detached testing) we probe 8765-8770 for the live daemon.
+  let apiBase = "";
+  let serverPort = (location.port || "8765").toString();
+
+  function apiUrl(path) {
+    return apiBase + path;
+  }
+
+  function portSuffix() {
+    return (serverPort && serverPort !== "8765") ? ` (port: ${serverPort})` : "";
+  }
+
+  function discoverDaemonPort() {
+    if (location.protocol !== "file:") return;
+    const ports = [8765, 8766, 8767, 8768, 8769, 8770];
+    let i = 0;
+    const tryNext = () => {
+      if (i >= ports.length) return;
+      const p = ports[i++];
+      fetch(`http://127.0.0.1:${p}/api/status`)
+        .then(res => res.json())
+        .then(data => {
+          if (data && (typeof data.markers_count === "number" || data.port)) {
+            apiBase = `http://127.0.0.1:${p}`;
+            serverPort = String((data && data.port) || p);
+            updateFpsTooltip();
+            pollServerSync();
+          } else {
+            tryNext();
+          }
+        })
+        .catch(tryNext);
+    };
+    tryNext();
+  }
 
   function fpsLabel() {
     const f = currentFpsNum / currentFpsDen;
@@ -454,12 +491,13 @@
   function updateFpsTooltip() {
     const btn = document.getElementById('btnClock');
     if (!btn) return;
+    const suffix = portSuffix();
     if (selectedTimestamp) {
-      btn.title = `Time frozen: ${selectedTimestamp} @${fpsLabel()}fps (click to re-grab)`;
+      btn.title = `Time frozen: ${selectedTimestamp} @${fpsLabel()}fps${suffix} (click to re-grab)`;
     } else if (isStale()) {
-      btn.title = `Timecode stale (>1.5s) - check WebSocket @${fpsLabel()}fps`;
+      btn.title = `Timecode stale (>1.5s) - check WebSocket @${fpsLabel()}fps${suffix}`;
     } else {
-      btn.title = `Freeze exact timecode @${fpsLabel()}fps`;
+      btn.title = `Freeze exact timecode @${fpsLabel()}fps${suffix}`;
     }
     refreshStaleClock();
   }
@@ -713,7 +751,7 @@
       isUndoActive = false;
       clearSavedInputFeedback();
 
-      fetch("/api/undo_marker", { method: "POST" })
+      fetch(apiUrl("/api/undo_marker"), { method: "POST" })
         .then(res => res.json())
         .then(data => {
           if (data.success) {
@@ -777,7 +815,7 @@
     // On failure show a transient error placeholder instead of fake success.
     // Paused flag travels for diagnostics; exports stay timecode-only.
     const wasPaused = isPaused;
-    fetch("/api/save_marker", {
+    fetch(apiUrl("/api/save_marker"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ timecode: time, name: desc, paused: wasPaused })
@@ -809,7 +847,7 @@
   // Source of truth is server presets.json (survives reinstalls/profiles);
   // localStorage stays as an offline cache.
   function syncPresetsToServer() {
-    fetch("/api/presets", {
+    fetch(apiUrl("/api/presets"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ presets: userPresets })
@@ -817,7 +855,7 @@
   }
 
   function loadPresetsFromServer() {
-    fetch("/api/presets")
+    fetch(apiUrl("/api/presets"))
       .then(res => res.json())
       .then(data => {
         if (data && Array.isArray(data.presets) && data.presets.length > 0) {
@@ -929,7 +967,7 @@
     const wasPaused = isPaused;
     isPaused = paused;
     if (!silent) {
-      fetch("/api/config", {
+      fetch(apiUrl("/api/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paused: paused })
@@ -1003,12 +1041,12 @@
               // first so reset doesn't wipe the session before the rename.
               const outputPath = (msg.d.eventData && msg.d.eventData.outputPath) || "";
               const doReset = () => {
-                fetch("/api/reset_session", { method: "POST" }).catch(() => {});
+                fetch(apiUrl("/api/reset_session"), { method: "POST" }).catch(() => {});
                 savedMarkersCount = 0;
                 updateMarkerCounter();
               };
               if (outputPath) {
-                fetch("/api/finalize_session", {
+                fetch(apiUrl("/api/finalize_session"), {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ output_path: outputPath })
@@ -1059,7 +1097,7 @@
           if (msg.op === 7 && msg.d.requestType === "GetRecordDirectory" && msg.d.responseData) {
             const dir = msg.d.responseData.recordDirectory;
             if (dir) {
-              fetch("/api/config", {
+              fetch(apiUrl("/api/config"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ recording_dir: dir })
@@ -1075,7 +1113,7 @@
               currentFpsNum = num;
               currentFpsDen = den;
               updateFpsTooltip();
-              fetch("/api/config", {
+              fetch(apiUrl("/api/config"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ fps_num: num, fps_den: den })
@@ -1135,7 +1173,7 @@
 
   // --- HIGH-FREQUENCY STATUS & GLOBAL HOTKEY SYNC ---
   function pollServerSync() {
-    fetch("/api/status")
+    fetch(apiUrl("/api/status"))
       .then(res => res.json())
       .then(data => {
         if (typeof data.markers_count === "number") {
@@ -1147,6 +1185,13 @@
           if (data.fps_num !== currentFpsNum || data.fps_den !== currentFpsDen) {
             currentFpsNum = data.fps_num;
             currentFpsDen = data.fps_den;
+            updateFpsTooltip();
+          }
+        }
+        if (data.port !== undefined && data.port !== null) {
+          const ps = String(data.port);
+          if (ps !== serverPort) {
+            serverPort = ps;
             updateFpsTooltip();
           }
         }
@@ -1184,6 +1229,7 @@
   loadPresetsFromServer();
   initObsWebSocket();
   pollServerSync();
+  discoverDaemonPort();
 </script>
 </body>
 </html>

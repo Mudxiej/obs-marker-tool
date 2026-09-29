@@ -3,26 +3,56 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = scriptDir
 
-' Single-instance guard: exit if 127.0.0.1:8765 already answers.
-Function ServerAlreadyRunning()
+' Single-instance guard: exit if a healthy server already answers.
+' Reads port.txt (written by the server on bind), then 8765, so a server
+' on a fallback port is still reused instead of launching a second copy.
+Function ProbeStatus(portNum)
     On Error Resume Next
     Dim http
     Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
     If Err.Number <> 0 Then
         Err.Clear
-        ServerAlreadyRunning = False
+        ProbeStatus = False
         Exit Function
     End If
-    http.SetTimeouts 500, 500, 500, 1000
-    http.Open "GET", "http://127.0.0.1:8765/api/status", False
+    http.SetTimeouts 300, 300, 300, 500
+    http.Open "GET", "http://127.0.0.1:" & CStr(portNum) & "/api/status", False
     http.Send
     If Err.Number = 0 And http.Status = 200 Then
+        ProbeStatus = True
+    Else
+        ProbeStatus = False
+    End If
+    Set http = Nothing
+    Err.Clear
+End Function
+
+Function ServerAlreadyRunning()
+    ' 1. Bound port from the previous launch, if the file exists.
+    Dim portFile, ts, saved
+    portFile = scriptDir & "\port.txt"
+    If fso.FileExists(portFile) Then
+        On Error Resume Next
+        Set ts = fso.OpenTextFile(portFile, 1, False)
+        If Err.Number = 0 Then
+            saved = Trim(ts.ReadAll())
+            ts.Close
+            If saved <> "" And IsNumeric(saved) Then
+                If ProbeStatus(CInt(saved)) Then
+                    ServerAlreadyRunning = True
+                    Exit Function
+                End If
+            End If
+        End If
+        Err.Clear
+        On Error GoTo 0
+    End If
+    ' 2. Default port fast path.
+    If ProbeStatus(8765) Then
         ServerAlreadyRunning = True
     Else
         ServerAlreadyRunning = False
     End If
-    Set http = Nothing
-    Err.Clear
 End Function
 
 If ServerAlreadyRunning() Then

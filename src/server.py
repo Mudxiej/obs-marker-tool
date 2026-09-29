@@ -22,7 +22,10 @@ import subprocess
 import tempfile
 
 PORT = 8765
+PORTS = (8765, 8766, 8767, 8768, 8769, 8770)
 SCRIPT_DIR = Path(__file__).parent.resolve()
+PORT_FILE = SCRIPT_DIR / "port.txt"
+CURRENT_PORT = PORT
 
 
 def _resolve_desktop_dir():
@@ -68,6 +71,84 @@ def valid_fps(num, den):
     except Exception:
         return False
     return 1 <= fps <= 240
+
+
+def is_origin_allowed(origin):
+    """Loopback-only CORS policy for the local daemon.
+
+    Allowed: missing/empty (curl, Lua, launchers), "null" (OBS CEF dock),
+    http://127.0.0.1:* and http://localhost:*. Anything else (external web
+    domains) is rejected on API endpoints with 403.
+    """
+    if not origin:
+        return True
+    o = origin.strip()
+    if not o or o == "null":
+        return True
+    low = o.lower()
+    for host in ("http://127.0.0.1", "http://localhost"):
+        if low == host or low.startswith(host + ":"):
+            return True
+    return False
+
+
+def is_unc_path(value):
+    try:
+        s = str(value)
+    except Exception:
+        return False
+    return s.startswith("\\\\") or s.startswith("//")
+
+
+def port_responds(port, timeout=0.5):
+    """True if a healthy marker server answers /api/status on port."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def reclaim_port_if_zombie_python(port):
+    """If port is held by a dead python/pythonw listener, kill it.
+
+    Returns True when the port looks free to bind (or was reclaimed).
+    Never touches non-python processes.
+    """
+    try:
+        out = subprocess.run(
+            ["cmd.exe", "/c", "netstat", "-aon"], capture_output=True, text=True, timeout=5
+        ).stdout
+    except Exception:
+        return False
+    import re
+    pids = set()
+    for line in out.splitlines():
+        if "127.0.0.1:%d" % port not in line or "LISTENING" not in line.upper():
+            continue
+        m = re.search(r"(\d+)\s*$", line.strip())
+        if m:
+            pids.add(m.group(1))
+    if not pids:
+        return True
+    reclaimed = False
+    for pid in pids:
+        try:
+            img = subprocess.run(
+                ["tasklist", "/FI", "PID eq %s" % pid, "/NH", "/FO", "TABLE"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+        except Exception:
+            continue
+        if "python" in img.lower():
+            try:
+                subprocess.run(["taskkill", "/f", "/pid", pid], capture_output=True, timeout=5)
+                reclaimed = True
+            except Exception:
+                pass
+    time.sleep(0.3)
+    return reclaimed
 
 
 def atomic_write_text(path, content):
@@ -897,8 +978,20 @@ def flag_watcher():
 threading.Thread(target=flag_watcher, daemon=True).start()
 
 class RequestHandler(BaseHTTPRequestHandler):
+    def _origin(self):
+        try:
+            return (self.headers.get('Origin') or '').strip()
+        except Exception:
+            return ''
+
+    def _api_forbidden(self):
+        return not is_origin_allowed(self._origin())
+
     def end_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
+        origin = self._origin()
+        if origin and is_origin_allowed(origin):
+            self.send_header('Access-Control-Allow-Origin', origin)
+            self.send_header('Vary', 'Origin')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
@@ -939,6 +1032,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404, "index.html not found")
         elif parsed.path == "/api/status":
+            if self._api_forbidden():
+                self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
+                return
             data = {
                 "active_session": session.session_id,
                 "markers_count": len(session.markers),
@@ -955,10 +1051,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "fps": session.get_fps_float(),
                 "paused": session.paused,
                 "folder_naming": session.folder_naming,
-                "recording_filename": session.recording_filename
+                "recording_filename": session.recording_filename,
+                "port": CURRENT_PORT
             }
             self.send_json(data)
         elif parsed.path == "/api/config":
+            if self._api_forbidden():
+                self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
+                return
             self.send_json({
                 "custom_output_dir": session.custom_output_dir,
                 "recording_dir": session.recording_dir,
@@ -974,20 +1074,33 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "export_csv": session.export_csv,
                 "export_xml": session.export_xml,
                 "export_fcpxml": session.export_fcpxml,
-                "export_json": session.export_json
+                "export_json": session.export_json,
+                "port": CURRENT_PORT
             })
         elif parsed.path == "/api/presets":
+            if self._api_forbidden():
+                self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
+                return
             try:
                 self.send_json({"presets": load_presets()})
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)
         elif parsed.path == "/api/open_folder":
+            if self._api_forbidden():
+                self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
+                return
             if session.flat_mode and session.flat_path:
                 target = Path(session.flat_path).parent
             else:
                 target = session.folder_path if (session.folder_path and session.folder_path.exists()) else session.get_base_dir()
+            if is_unc_path(str(target)):
+                self.send_json({"success": False, "error": "UNC network paths are not allowed"}, status=400)
+                return
             try:
                 target.mkdir(parents=True, exist_ok=True)
+                if not target.is_dir():
+                    self.send_json({"success": False, "error": "Target is not a directory"}, status=400)
+                    return
                 os.startfile(str(target))
                 self.send_json({"success": True, "opened": str(target)})
             except Exception as e:
@@ -999,6 +1112,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
+
+        if parsed.path.startswith("/api/") and self._api_forbidden():
+            self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
+            return
 
         if parsed.path == "/api/save_marker":
             try:
@@ -1049,12 +1166,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                     rec = payload["recording_dir"]
                     if isinstance(rec, str):
                         rec = rec.strip()
+                        if rec and is_unc_path(rec):
+                            self.send_json({"success": False, "error": "UNC network paths are not allowed"}, status=400)
+                            return
                         session.recording_dir = rec if rec else None
                     elif rec is None:
                         session.recording_dir = None
                 if "custom_output_dir" in payload:
                     raw = payload["custom_output_dir"]
                     val = raw.strip() if isinstance(raw, str) else ""
+                    if val and is_unc_path(val):
+                        self.send_json({"success": False, "error": "UNC network paths are not allowed"}, status=400)
+                        return
                     session.custom_output_dir = val if val else None
                     session.save_config()
                 if "fps_num" in payload or "fps_den" in payload:
@@ -1103,7 +1226,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "export_csv": session.export_csv,
                     "export_xml": session.export_xml,
                     "export_fcpxml": session.export_fcpxml,
-                    "export_json": session.export_json
+                    "export_json": session.export_json,
+                    "port": CURRENT_PORT
                 })
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)
@@ -1141,9 +1265,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"success": False, "error": str(e)}, status=500)
 
         elif parsed.path == "/api/open_folder":
-            target = session.folder_path if (session.folder_path and session.folder_path.exists()) else session.get_base_dir()
+            if session.flat_mode and session.flat_path:
+                target = Path(session.flat_path).parent
+            else:
+                target = session.folder_path if (session.folder_path and session.folder_path.exists()) else session.get_base_dir()
+            if is_unc_path(str(target)):
+                self.send_json({"success": False, "error": "UNC network paths are not allowed"}, status=400)
+                return
             try:
                 target.mkdir(parents=True, exist_ok=True)
+                if not target.is_dir():
+                    self.send_json({"success": False, "error": "Target is not a directory"}, status=400)
+                    return
                 os.startfile(str(target))
                 self.send_json({"success": True, "opened": str(target)})
             except Exception as e:
@@ -1175,18 +1308,38 @@ class ResilientHTTPServer(ThreadingHTTPServer):
             pass
 
 def run():
-    server_address = ('127.0.0.1', PORT)
+    global CURRENT_PORT
+    # Single-instance fast path: a healthy server already answers on 8765.
+    if port_responds(PORT):
+        return
     httpd = None
-    for _ in range(25):
+    bound = None
+    for port in PORTS:
         try:
-            httpd = ResilientHTTPServer(server_address, RequestHandler)
+            httpd = ResilientHTTPServer(('127.0.0.1', port), RequestHandler)
+            bound = port
             break
         except OSError:
-            time.sleep(0.5)
-    if not httpd:
+            # Port held but nobody healthy answers: reclaim zombie python only.
+            if port == PORT:
+                try:
+                    if reclaim_port_if_zombie_python(port) and not port_responds(port, timeout=0.3):
+                        httpd = ResilientHTTPServer(('127.0.0.1', port), RequestHandler)
+                        bound = port
+                        break
+                except OSError:
+                    pass
+            continue
+    if not httpd or bound is None:
         with open(SCRIPT_DIR / "crash.log", "a", encoding="utf-8") as f:
-            f.write("Failed to bind port 8765 after 25 retries.\n")
+            f.write("Failed to bind ports 8765-8770.\n")
         return
+    CURRENT_PORT = bound
+    try:
+        with open(PORT_FILE, "w", encoding="utf-8") as f:
+            f.write(str(bound))
+    except Exception:
+        pass
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1201,6 +1354,11 @@ def run():
     finally:
         try:
             httpd.server_close()
+        except Exception:
+            pass
+        try:
+            if PORT_FILE.exists():
+                PORT_FILE.unlink(missing_ok=True)
         except Exception:
             pass
 
