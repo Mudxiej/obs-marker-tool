@@ -136,6 +136,8 @@ class MarkerSession:
         self.fps_num = 60
         self.fps_den = 1
         self.paused = False
+        self.folder_naming = "timestamp"
+        self.recording_filename = None
         self.load_config()
 
     def load_config(self):
@@ -152,6 +154,11 @@ class MarkerSession:
                             self.fps_num, self.fps_den = num, den
                     except Exception:
                         pass
+                    naming = data.get("folder_naming", "timestamp")
+                    if isinstance(naming, str) and naming.strip().lower() == "video":
+                        self.folder_naming = "video"
+                    else:
+                        self.folder_naming = "timestamp"
             except Exception:
                 pass
 
@@ -169,10 +176,32 @@ class MarkerSession:
             data["custom_output_dir"] = self.custom_output_dir or ""
             data["fps_num"] = self.fps_num
             data["fps_den"] = self.fps_den
+            data["folder_naming"] = self.folder_naming or "timestamp"
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f)
         except Exception:
             pass
+
+    @staticmethod
+    def sanitize_stem(stem):
+        """Sanitize a video basename for use in a folder name.
+
+        Strips directories, extension must already be removed by caller,
+        removes illegal Windows chars, trims trailing dots/spaces, caps length.
+        Returns "" if nothing usable remains (caller falls back to timestamp).
+        """
+        try:
+            s = (stem or "").strip()
+            # Drop any directory components that slipped in
+            s = s.replace("/", "\\").split("\\")[-1]
+            for ch in '<>:"|?*':
+                s = s.replace(ch, "")
+            s = s.strip().rstrip(". ")
+            if len(s) > 80:
+                s = s[:80].rstrip(". ")
+            return s
+        except Exception:
+            return ""
 
     def get_fps_float(self):
         try:
@@ -519,6 +548,63 @@ class MarkerSession:
         self.fcpxml_path = None
         self.markers = []
         self.paused = False
+        self.recording_filename = None
+
+    def finalize_session(self, output_path):
+        """Rename the timestamp folder to a video-stem folder on recording stop.
+
+        Active sessions always write to Markers_<timestamp>/ so a mid-stream
+        crash loses nothing. When OBS reports outputPath on STOPPED and
+        folder_naming == "video", rename to Markers_<stem> with collision
+        suffix. Failures keep the timestamp folder intact.
+        Returns (renamed: bool, folder: str|None, reason: str).
+        """
+        self.load_config()
+        if self.folder_naming != "video":
+            return False, str(self.folder_path) if self.folder_path else None, "timestamp mode"
+        if not self.folder_path or not self.folder_path.exists():
+            return False, None, "no session folder"
+        try:
+            base = (output_path or "").replace("/", "\\").split("\\")[-1].strip()
+        except Exception:
+            base = ""
+        if not base:
+            return False, str(self.folder_path), "empty output path"
+        stem = base
+        if "." in base:
+            stem = base.rsplit(".", 1)[0]
+        stem = self.sanitize_stem(stem)
+        if not stem:
+            return False, str(self.folder_path), "unusable stem"
+        self.recording_filename = base
+        target = self.folder_path.parent / f"Markers_{stem}"
+        if target.resolve() == self.folder_path.resolve():
+            return False, str(self.folder_path), "already named"
+        suffix = 1
+        candidate = target
+        while candidate.exists():
+            suffix += 1
+            candidate = self.folder_path.parent / f"Markers_{stem}_{suffix}"
+            if suffix > 100:
+                return False, str(self.folder_path), "collision overflow"
+        for attempt in range(3):
+            try:
+                os.rename(str(self.folder_path), str(candidate))
+                break
+            except PermissionError:
+                time.sleep(0.05)
+            except OSError:
+                time.sleep(0.05)
+        else:
+            return False, str(self.folder_path), "rename failed"
+        if not candidate.exists():
+            return False, str(self.folder_path), "rename failed"
+        self.folder_path = candidate
+        self.txt_path = candidate / "markers.txt"
+        self.csv_path = candidate / "markers.csv"
+        self.xml_path = candidate / "premiere_sequence.xml"
+        self.fcpxml_path = candidate / "final_cut_pro.fcpxml"
+        return True, str(candidate), "renamed"
 
 session = MarkerSession()
 
@@ -593,7 +679,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "fps_num": session.fps_num,
                 "fps_den": session.fps_den,
                 "fps": session.get_fps_float(),
-                "paused": session.paused
+                "paused": session.paused,
+                "folder_naming": session.folder_naming,
+                "recording_filename": session.recording_filename
             }
             self.send_json(data)
         elif parsed.path == "/api/config":
@@ -604,7 +692,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "fps_num": session.fps_num,
                 "fps_den": session.fps_den,
                 "fps": session.get_fps_float(),
-                "paused": session.paused
+                "paused": session.paused,
+                "folder_naming": session.folder_naming,
+                "recording_filename": session.recording_filename
             })
         elif parsed.path == "/api/open_folder":
             target = session.folder_path if (session.folder_path and session.folder_path.exists()) else session.get_base_dir()
@@ -683,6 +773,17 @@ class RequestHandler(BaseHTTPRequestHandler):
                         pass
                 if "paused" in payload:
                     session.paused = bool(payload["paused"])
+                if "folder_naming" in payload:
+                    naming = payload["folder_naming"]
+                    session.folder_naming = "video" if isinstance(naming, str) and naming.strip().lower() == "video" else "timestamp"
+                    session.save_config()
+                if "recording_filename" in payload:
+                    rec_fn = payload["recording_filename"]
+                    if rec_fn is None:
+                        session.recording_filename = None
+                    elif isinstance(rec_fn, str):
+                        rec_fn = rec_fn.replace("/", "\\").split("\\")[-1].strip()
+                        session.recording_filename = rec_fn[:120] if rec_fn else None
                 self.send_json({
                     "success": True,
                     "recording_dir": session.recording_dir,
@@ -691,7 +792,26 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "fps_num": session.fps_num,
                     "fps_den": session.fps_den,
                     "fps": session.get_fps_float(),
-                    "paused": session.paused
+                    "paused": session.paused,
+                    "folder_naming": session.folder_naming,
+                    "recording_filename": session.recording_filename
+                })
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=500)
+
+        elif parsed.path == "/api/finalize_session":
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+                output_path = payload.get("output_path", "")
+                if not isinstance(output_path, str):
+                    output_path = ""
+                renamed, folder, reason = session.finalize_session(output_path)
+                self.send_json({
+                    "success": True,
+                    "renamed": renamed,
+                    "folder": folder,
+                    "reason": reason,
+                    "markers_count": len(session.markers)
                 })
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)

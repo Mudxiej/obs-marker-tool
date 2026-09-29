@@ -3,6 +3,7 @@ local obs = obslua
 
 local hotkey_id = obs.OBS_INVALID_HOTKEY_ID
 local custom_output_dir = ""
+local folder_naming = "timestamp"
 
 function script_description()
     return "OBS Marker Tool Service\n\n" ..
@@ -28,13 +29,31 @@ local function get_script_dir()
     return p
 end
 
+local function read_config_value(key, fallback)
+    local win_dir = get_script_dir()
+    local f = io.open(win_dir .. "config.json", "r")
+    if not f then return fallback end
+    local content = f:read("*a")
+    f:close()
+    if not content then return fallback end
+    local s = string.match(content, '"' .. key .. '"%s*:%s*"([^"]-)"')
+    if s ~= nil then return s end
+    local n = string.match(content, '"' .. key .. '"%s*:%s*(-?[%d%.]+)')
+    if n ~= nil then return n end
+    return fallback
+end
+
 local function write_config()
     local win_dir = get_script_dir()
     local config_file = win_dir .. "config.json"
+    -- Merge-safe: preserve fps keys written by the server so Lua saves
+    -- don't clobber them (and vice versa).
+    local fps_num = read_config_value("fps_num", "60")
+    local fps_den = read_config_value("fps_den", "1")
     local f = io.open(config_file, "w")
     if f then
-        local safe_dir = string.gsub(custom_output_dir, "\\", "\\\\")
-        f:write('{"custom_output_dir": "' .. safe_dir .. '"}')
+        local safe_dir = string.gsub(custom_output_dir or "", "\\", "\\\\")
+        f:write('{"custom_output_dir": "' .. safe_dir .. '", "folder_naming": "' .. (folder_naming or "timestamp") .. '", "fps_num": ' .. tostring(fps_num) .. ', "fps_den": ' .. tostring(fps_den) .. '}')
         f:close()
     end
 end
@@ -67,7 +86,14 @@ function script_properties()
     -- 1. Output directory property
     obs.obs_properties_add_path(props, "custom_output_dir", "Save Location (Leave blank for OBS Recording folder)", obs.OBS_PATH_DIRECTORY, "", "")
 
-    -- 2. Open folder button
+    -- 2. Folder naming: timestamp folders always, or rename to the video
+    -- filename on stop (outputPath arrives on STOPPED; active sessions stay
+    -- in timestamp folders so a crash never loses markers).
+    local naming = obs.obs_properties_add_list(props, "folder_naming", "Folder Naming", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    obs.obs_property_list_add_string(naming, "Timestamp (Markers_YYYY-MM-DD_HH-MM-SS)", "timestamp")
+    obs.obs_property_list_add_string(naming, "Video filename (rename on stop)", "video")
+
+    -- 3. Open folder button
     obs.obs_properties_add_button(props, "btn_open", "Open Save Folder in Explorer", on_open_folder)
 
     return props
@@ -75,11 +101,14 @@ end
 
 function script_update(settings)
     custom_output_dir = obs.obs_data_get_string(settings, "custom_output_dir")
+    folder_naming = obs.obs_data_get_string(settings, "folder_naming")
+    if folder_naming ~= "video" then folder_naming = "timestamp" end
     write_config()
 end
 
 function script_defaults(settings)
     obs.obs_data_set_default_string(settings, "custom_output_dir", "")
+    obs.obs_data_set_default_string(settings, "folder_naming", "timestamp")
 end
 
 function script_load(settings)
@@ -104,6 +133,8 @@ function script_load(settings)
 
     -- Read initial settings
     custom_output_dir = obs.obs_data_get_string(settings, "custom_output_dir")
+    folder_naming = obs.obs_data_get_string(settings, "folder_naming")
+    if folder_naming ~= "video" then folder_naming = "timestamp" end
     write_config()
 end
 
@@ -113,8 +144,9 @@ function script_save(settings)
     obs.obs_data_set_array(settings, "marker_tool.freeze", hotkey_save_array)
     obs.obs_data_array_release(hotkey_save_array)
 
-    -- Save directory property
+    -- Save directory + naming properties
     obs.obs_data_set_string(settings, "custom_output_dir", custom_output_dir)
+    obs.obs_data_set_string(settings, "folder_naming", folder_naming)
     write_config()
 end
 
