@@ -92,16 +92,17 @@ Gaming streamers and content creators operate under heavy cognitive load, often 
   - Pros: High-precision timestamps combined with rich context.
   - Cons: Requires handling state where a frozen timestamp is cleared or overwritten.
 
-### ADR-04: Simultaneous 4-Format Multi-NLE Serialization
+### ADR-04: Simultaneous 5-Format Multi-NLE Serialization
 - **Context**: Creators collaborate with editors using diverse editing suites (Premiere Pro, DaVinci Resolve, Final Cut Pro) and also post YouTube chapters.
-- **Decision**: On every save, serialize the entire marker list simultaneously into four files:
+- **Decision**: On every save, serialize the entire marker list simultaneously into five files:
   1. `markers.txt`: Formatted for YouTube video description chapters with auto-prepended `00:00:00 - Intro`.
   2. `markers.csv`: Standard CSV with RFC 4180 quotes for DaVinci Resolve and Premiere CSV marker import.
   3. `premiere_sequence.xml`: FCP 7 XML sequence for Premiere Pro drag-and-drop.
   4. `final_cut_pro.fcpxml`: FCPXML v1.9 sequence for Apple Final Cut Pro and DaVinci XML import.
+  5. `markers.json`: Structured timeline (`id`, `timecode`, `seconds`, `frame`, `name`/`label`) for MoviePy, Resolve Python API, and bots.
 - **Consequences**:
   - Pros: Zero configuration required. Any editor on the team can pick their preferred format.
-  - Cons: Four file writes per marker (mitigated by microscopic file sizes <10KB).
+  - Cons: Five file writes per marker (mitigated by microscopic file sizes <10KB).
 
 ### ADR-05: Atomic 5-Second Undo with Auto-Purging
 - **Context**: Accidental hotkey taps create unnecessary files on disk.

@@ -129,6 +129,7 @@ class MarkerSession:
         self.csv_path = None
         self.xml_path = None
         self.fcpxml_path = None
+        self.json_path = None
         self.markers = []
         self.recording_dir = None
         self.custom_output_dir = None
@@ -266,6 +267,7 @@ class MarkerSession:
             self.csv_path = self.folder_path / "markers.csv"
             self.xml_path = self.folder_path / "premiere_sequence.xml"
             self.fcpxml_path = self.folder_path / "final_cut_pro.fcpxml"
+            self.json_path = self.folder_path / "markers.json"
             self.files_created = False
             self.markers = []
 
@@ -315,6 +317,7 @@ class MarkerSession:
             frame_in = 0
 
         marker_entry = {
+            "id": len(self.markers) + 1,
             "timecode": timecode,
             "seconds": total_seconds,
             "name": display_name,
@@ -461,12 +464,35 @@ class MarkerSession:
 
         atomic_write_text(self.fcpxml_path, "\n".join(fcpxml_lines) + "\n")
 
+        # 5. Programmatic JSON timeline export (MoviePy / Resolve API / bots).
+        # name + label aliases plus stable id so consumers don't care which
+        # key they look up. ensure_ascii=False keeps i18n/emoji readable.
+        json_markers = []
+        for i, m in enumerate(self.markers):
+            json_markers.append({
+                "id": m.get("id", i + 1),
+                "timecode": m.get("timecode"),
+                "seconds": m.get("seconds"),
+                "frame": m.get("frame_in"),
+                "name": m.get("name"),
+                "label": m.get("name"),
+                "paused": bool(m.get("paused", False)),
+            })
+        json_doc = {
+            "recording_session": self.session_id,
+            "fps": fps_f,
+            "fps_num": self.fps_num,
+            "fps_den": self.fps_den,
+            "markers": json_markers,
+        }
+        atomic_write_text(self.json_path, json.dumps(json_doc, indent=2, ensure_ascii=False) + "\n")
+
         self.files_created = True
 
     def cleanup_session_files(self):
-        """Completely delete the 4 export files and the session folder."""
+        """Completely delete the 5 export files and the session folder."""
         folder = self.folder_path
-        files_to_remove = [self.txt_path, self.csv_path, self.xml_path, self.fcpxml_path]
+        files_to_remove = [self.txt_path, self.csv_path, self.xml_path, self.fcpxml_path, self.json_path]
 
         # Force Python garbage collection to release any latent Windows file handles
         gc.collect()
@@ -546,6 +572,7 @@ class MarkerSession:
         self.csv_path = None
         self.xml_path = None
         self.fcpxml_path = None
+        self.json_path = None
         self.markers = []
         self.paused = False
         self.recording_filename = None
@@ -604,6 +631,7 @@ class MarkerSession:
         self.csv_path = candidate / "markers.csv"
         self.xml_path = candidate / "premiere_sequence.xml"
         self.fcpxml_path = candidate / "final_cut_pro.fcpxml"
+        self.json_path = candidate / "markers.json"
         return True, str(candidate), "renamed"
 
 session = MarkerSession()
