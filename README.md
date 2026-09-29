@@ -77,7 +77,7 @@ flowchart TD
 ## Quick Start in 60 Seconds
 
 ### Step 1: Install Files
-1. Download the latest `obs-marker-tool_v1.0.0.zip` from [Releases](https://github.com/Mudxiej/obs-marker-tool/releases/latest).
+1. Download the latest `obs-marker-tool_v1.0.1.zip` from [Releases](https://github.com/Mudxiej/obs-marker-tool/releases/latest).
 2. Extract the archive.
 3. Double-click **`install.bat`** (automatically deploys all plugin files to `%APPDATA%\obs-studio\scripts\obs-marker-tool\`).
 
