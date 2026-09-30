@@ -40,6 +40,7 @@ copy /Y "%~dp0marker_service.lua" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0run_silent.vbs" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0run.bat" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0stop.bat" "%TARGET_DIR%\" >nul
+copy /Y "%~dp0VERSION" "%TARGET_DIR%\" >nul
 rem Never overwrite customized tags on update: install defaults only once.
 if not exist "%TARGET_DIR%\presets.json" (
     if exist "%~dp0presets.json" (

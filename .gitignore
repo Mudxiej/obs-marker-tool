@@ -5,9 +5,11 @@ __pycache__/
 
 # Local Runtime & Transient State
 crash.log
+crash.log.1
 *.flag
 freeze_trigger.flag
 port.txt
+update_check.json
 
 # User Configuration & Test Sessions
 config.json

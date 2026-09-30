@@ -102,6 +102,10 @@ flowchart TD
 > [!IMPORTANT]
 > The marker dock activates automatically as soon as OBS starts recording (`outputActive: true`). When recording stops, it resets cleanly for the next session.
 
+### Updates & Uninstall
+- **Version**: shown in the clock-button tooltip (`vX.Y.Z @60fps`) and at `http://127.0.0.1:8765/api/diag`. When a newer GitHub release exists, an amber **Update** pill appears in the dock's second row — clicking it opens Releases in your OS browser (never auto-downloads).
+- **Uninstall**: double-click **`uninstall.bat`**. It stops the server, waits for exit, and removes `%APPDATA%\obs-studio\scripts\obs-marker-tool\`. Choose to keep `config.json` / `presets.json` for reinstall, then also remove the Lua entry under OBS **Tools** -> **Scripts** if listed.
+
 ---
 
 ## NLE Import Workflow
@@ -158,11 +162,14 @@ The local daemon listens on `127.0.0.1:8765`:
 | Endpoint | Method | Payload | Function |
 | :--- | :--- | :--- | :--- |
 | `/api/status` | `GET` | None | Returns active session metadata, marker count, recording directory, and last freeze event. |
-| `/api/save_marker` | `POST` | `{"timecode": "00:01:23", "name": "Ace"}` | Writes new marker entry across TXT, CSV, Premiere XML, and FCPXML simultaneously. |
+| `/api/save_marker` | `POST` | `{"timecode": "00:01:23", "name": "Ace"}` | Writes new marker entry across enabled export formats simultaneously. |
 | `/api/undo_marker` | `POST` | None | Removes last saved marker. Purges directory if count reaches 0. |
 | `/api/reset_session`| `POST` | None | Concludes session state on recording stop. |
 | `/api/config` | `POST` | `{"recording_dir": "..."}` or `{"custom_output_dir": "..."}` | Updates dynamic output targets from OBS WebSocket. |
 | `/api/open_folder` | `POST` | None | Opens the active session folder in Windows Explorer. |
+| `/api/presets` | `GET`/`POST` | `{"presets": [...]}` on POST | Reads or replaces server-side preset tags. |
+| `/api/diag` | `GET` | None | Privacy-bounded diagnostics bundle for bug reports. |
+| `/api/open_releases` | `POST` | None | Opens GitHub Releases in the OS browser for manual update. |
 
 ---
 

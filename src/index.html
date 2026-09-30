@@ -311,6 +311,35 @@
     border-color: var(--accent-hover);
   }
 
+  /* Update badge: 18px amber pill, hidden unless an update is available */
+  .update-badge {
+    background: rgba(245, 158, 11, 0.18);
+    border: 1px solid rgba(245, 158, 11, 0.6);
+    color: #f59e0b;
+    font-size: 9.5px;
+    font-weight: 600;
+    padding: 0 6px;
+    border-radius: 2px;
+    cursor: pointer;
+    white-space: nowrap;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    height: 18px;
+    line-height: 18px;
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+
+  .update-badge.show {
+    display: inline-flex;
+  }
+
+  .update-badge:hover {
+    background: rgba(245, 158, 11, 0.35);
+    color: #ffffff;
+  }
+
   /* In-place morphing tag button / input */
   .btn-tag-morph {
     background: transparent;
@@ -405,6 +434,7 @@
     <div id="tagMorphWrap" style="flex-shrink: 0; height: 18px; display: flex; align-items: center;">
       <button class="btn-tag-morph" id="btnTagMorph" onclick="morphToInput()">+ tag</button>
     </div>
+    <button class="update-badge" id="updateBadge" onclick="openReleasesPage()" title="New version available">Update</button>
   </div>
 
 <script>
@@ -437,9 +467,29 @@
   // (detached testing) we probe 8765-8770 for the live daemon.
   let apiBase = "";
   let serverPort = (location.port || "8765").toString();
+  let appVersion = "dev";
+  let updateAvailable = false;
+  let latestVersion = null;
 
   function apiUrl(path) {
     return apiBase + path;
+  }
+
+  function openReleasesPage() {
+    // Via the server so OBS CEF never navigates the dock panel away.
+    fetch(apiUrl("/api/open_releases"), { method: "POST" }).catch(() => {});
+  }
+
+  function refreshUpdateBadge() {
+    const badge = document.getElementById('updateBadge');
+    if (!badge) return;
+    if (updateAvailable && latestVersion) {
+      badge.textContent = `Update ${latestVersion}`;
+      badge.title = `Version ${latestVersion} is available - click to open releases`;
+      badge.classList.add('show');
+    } else {
+      badge.classList.remove('show');
+    }
   }
 
   function portSuffix() {
@@ -492,12 +542,13 @@
     const btn = document.getElementById('btnClock');
     if (!btn) return;
     const suffix = portSuffix();
+    const ver = `v${appVersion}`;
     if (selectedTimestamp) {
-      btn.title = `Time frozen: ${selectedTimestamp} @${fpsLabel()}fps${suffix} (click to re-grab)`;
+      btn.title = `${ver} Time frozen: ${selectedTimestamp} @${fpsLabel()}fps${suffix} (click to re-grab)`;
     } else if (isStale()) {
-      btn.title = `Timecode stale (>1.5s) - check WebSocket @${fpsLabel()}fps${suffix}`;
+      btn.title = `${ver} Timecode stale (>1.5s) - check WebSocket @${fpsLabel()}fps${suffix}`;
     } else {
-      btn.title = `Freeze exact timecode @${fpsLabel()}fps${suffix}`;
+      btn.title = `${ver} Freeze exact timecode @${fpsLabel()}fps${suffix}`;
     }
     refreshStaleClock();
   }
@@ -1194,6 +1245,23 @@
             serverPort = ps;
             updateFpsTooltip();
           }
+        }
+        if (typeof data.app_version === "string" && data.app_version && data.app_version !== appVersion) {
+          appVersion = data.app_version;
+          updateFpsTooltip();
+        }
+        if (typeof data.update_available === "boolean" && data.update_available !== updateAvailable) {
+          updateAvailable = data.update_available;
+          refreshUpdateBadge();
+        }
+        if (typeof data.latest_version === "string") {
+          if (data.latest_version !== latestVersion) {
+            latestVersion = data.latest_version || null;
+            refreshUpdateBadge();
+          }
+        } else if (data.latest_version === null && latestVersion !== null) {
+          latestVersion = null;
+          refreshUpdateBadge();
         }
 
         // Global hotkey trigger detection.
