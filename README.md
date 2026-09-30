@@ -103,7 +103,7 @@ flowchart TD
 > The marker dock activates automatically as soon as OBS starts recording (`outputActive: true`). When recording stops, it resets cleanly for the next session.
 
 ### Updates & Uninstall
-- **Version**: shown in the clock-button tooltip (`vX.Y.Z @60fps`) and at `http://127.0.0.1:8765/api/diag`. When a newer GitHub release exists, an amber **Update** pill appears in the dock's second row — clicking it opens Releases in your OS browser (never auto-downloads).
+- **Version**: shown in the clock-button tooltip (`vX.Y.Z @60fps`) and at `http://127.0.0.1:8765/api/diag`. When a newer GitHub release exists, an amber **Update** pill appears in the dock's second row - clicking it opens Releases in your OS browser (never auto-downloads).
 - **Uninstall**: double-click **`uninstall.bat`**. It stops the server, waits for exit, and removes `%APPDATA%\obs-studio\scripts\obs-marker-tool\`. Choose to keep `config.json` / `presets.json` for reinstall, then also remove the Lua entry under OBS **Tools** -> **Scripts** if listed.
 
 ---
