@@ -18,7 +18,13 @@ Function ProbeStatus(portNum)
     http.SetTimeouts 300, 300, 300, 500
     http.Open "GET", "http://127.0.0.1:" & CStr(portNum) & "/api/status", False
     http.Send
-    If Err.Number = 0 And http.Status = 200 Then
+    If Err.Number <> 0 Then
+        Err.Clear
+        ProbeStatus = False
+        Set http = Nothing
+        Exit Function
+    End If
+    If http.Status = 200 Then
         ProbeStatus = True
     Else
         ProbeStatus = False
