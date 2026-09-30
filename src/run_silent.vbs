@@ -66,7 +66,7 @@ End If
 ' 2. pythonw.exe on PATH
 ' 3. py.exe launcher (py -3 -W)
 Function FindPythonW()
-    Dim localApp, folder, sub, best, bestNum, cur, re
+    Dim localApp, folder, best, bestNum, cur
     localApp = WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\Python\"
     best = ""
     bestNum = 0
