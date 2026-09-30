@@ -17,9 +17,12 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from xml.sax.saxutils import escape as xml_escape
 import urllib.parse
+import urllib.request
 import shutil
 import subprocess
 import tempfile
+import re
+import random
 
 PORT = 8765
 PORTS = (8765, 8766, 8767, 8768, 8769, 8770)
@@ -56,6 +59,11 @@ VERSION_FILE = SCRIPT_DIR / "VERSION"
 CRASH_LOG = SCRIPT_DIR / "crash.log"
 CRASH_LOG_BACKUP = SCRIPT_DIR / "crash.log.1"
 CRASH_LOG_MAX_BYTES = 200 * 1024
+UPDATE_CHECK_FILE = SCRIPT_DIR / "update_check.json"
+RELEASES_URL = "https://github.com/Mudxiej/obs-marker-tool/releases/latest"
+RELEASES_API_URL = "https://api.github.com/repos/Mudxiej/obs-marker-tool/releases/latest"
+UPDATE_CHECK_MIN_SECONDS = 20 * 3600
+UPDATE_CHECK_MAX_SECONDS = 28 * 3600
 
 
 def get_app_version():
@@ -109,6 +117,105 @@ def write_crash_log(line):
     except Exception:
         pass
     record_error(line)
+
+
+def parse_version_tuple(value):
+    """Parse a version tag into a 3-int tuple, padded. None if no digits."""
+    try:
+        parts = re.findall(r"\d+", str(value or ""))[:3]
+        if not parts:
+            return None
+        nums = [int(x) for x in parts]
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums)
+    except Exception:
+        return None
+
+
+_UPDATE_CACHE = {"latest": None, "checked_at": 0.0, "next_interval": UPDATE_CHECK_MIN_SECONDS}
+_UPDATE_LOCK = threading.Lock()
+
+
+def _load_update_cache():
+    try:
+        if UPDATE_CHECK_FILE.exists():
+            with open(UPDATE_CHECK_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    if isinstance(data.get("latest"), str) and data["latest"]:
+                        _UPDATE_CACHE["latest"] = data["latest"][:32]
+                    try:
+                        _UPDATE_CACHE["checked_at"] = float(data.get("checked_at", 0.0))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+def _save_update_cache():
+    try:
+        with open(UPDATE_CHECK_FILE, "w", encoding="utf-8") as f:
+            json.dump(_UPDATE_CACHE, f)
+    except Exception:
+        pass
+
+
+def _perform_update_check():
+    """One GitHub Releases poll. Always records checked_at (even on failure)
+    so a dead network can never cause a retry storm."""
+    latest = None
+    try:
+        req = urllib.request.Request(
+            RELEASES_API_URL,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "obs-marker-tool-update-check"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+            tag = payload.get("tag_name", "")
+            if isinstance(tag, str) and tag.strip():
+                latest = tag.strip()[:32]
+    except Exception:
+        latest = None
+    with _UPDATE_LOCK:
+        if latest:
+            _UPDATE_CACHE["latest"] = latest
+        _UPDATE_CACHE["checked_at"] = time.time()
+        _UPDATE_CACHE["next_interval"] = random.uniform(UPDATE_CHECK_MIN_SECONDS, UPDATE_CHECK_MAX_SECONDS)
+        _save_update_cache()
+
+
+def get_update_state():
+    """(available: bool, latest: str|None) from in-memory cache. Never blocks."""
+    try:
+        with _UPDATE_LOCK:
+            latest = _UPDATE_CACHE.get("latest")
+        if not latest:
+            return False, None
+        cur = parse_version_tuple(get_app_version())
+        new = parse_version_tuple(latest)
+        if not cur or not new:
+            return False, latest
+        return (new > cur), latest
+    except Exception:
+        return False, None
+
+
+def update_checker_thread():
+    _load_update_cache()
+    while True:
+        try:
+            with _UPDATE_LOCK:
+                due_in = _UPDATE_CACHE["checked_at"] + _UPDATE_CACHE["next_interval"] - time.time()
+            if due_in <= 0:
+                _perform_update_check()
+                continue
+            time.sleep(min(due_in, 3600))
+        except Exception:
+            try:
+                time.sleep(3600)
+            except Exception:
+                return
 
 
 def valid_fps(num, den):
@@ -1092,6 +1199,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             if self._api_forbidden():
                 self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
                 return
+            update_available, latest_version = get_update_state()
             data = {
                 "active_session": session.session_id,
                 "markers_count": len(session.markers),
@@ -1099,6 +1207,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "folder": str(session.flat_path) if session.flat_mode and session.flat_path else (str(session.folder_path) if session.folder_path else None),
                 "output_mode": "flat" if session.flat_mode else "folder",
                 "enabled_formats": session.enabled_formats(),
+                "app_version": get_app_version(),
+                "update_available": update_available,
+                "latest_version": latest_version,
                 "base_dir": str(session.get_base_dir()),
                 "recording_dir": str(session.recording_dir) if session.recording_dir else None,
                 "custom_output_dir": str(session.custom_output_dir) if session.custom_output_dir else None,
@@ -1337,6 +1448,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)
 
+        elif parsed.path == "/api/open_releases":
+            # Hardcoded server-side URL only: never accept a client URL
+            # (would be an open-redirect primitive on loopback). Opens the
+            # OS default browser so OBS CEF never navigates the dock away.
+            try:
+                os.startfile(RELEASES_URL)
+                self.send_json({"success": True, "opened": RELEASES_URL})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=500)
+
         elif parsed.path == "/api/finalize_session":
             try:
                 payload = json.loads(body.decode("utf-8")) if body else {}
@@ -1425,6 +1546,10 @@ def run():
     try:
         with open(PORT_FILE, "w", encoding="utf-8") as f:
             f.write(str(bound))
+    except Exception:
+        pass
+    try:
+        threading.Thread(target=update_checker_thread, daemon=True).start()
     except Exception:
         pass
     try:
