@@ -28,7 +28,7 @@ assignees: []
 - **Recording Format / Container**: (e.g. MKV, MP4, Fragmented MP4)
 
 ## Logs and Diagnostics
-<!-- Paste contents of crash.log from %APPDATA%\obs-studio\scripts\obs-marker-tool\crash.log if present. -->
+<!-- Open http://127.0.0.1:8765/api/diag in a browser (use your bound port from port.txt if 8765 differs) and paste the JSON below. Then paste the tail of crash.log from %APPDATA%\obs-studio\scripts\obs-marker-tool\crash.log only if it exists. -->
 ```text
 ```
 
