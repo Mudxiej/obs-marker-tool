@@ -52,6 +52,63 @@ PRESETS_FILE = SCRIPT_DIR / "presets.json"
 DEFAULT_PRESETS = ["Ace", "Clutch", "Funny", "Dono", "Whiff"]
 MAX_PRESETS = 30
 MAX_PRESET_LEN = 24
+VERSION_FILE = SCRIPT_DIR / "VERSION"
+CRASH_LOG = SCRIPT_DIR / "crash.log"
+CRASH_LOG_BACKUP = SCRIPT_DIR / "crash.log.1"
+CRASH_LOG_MAX_BYTES = 200 * 1024
+
+
+def get_app_version():
+    """Daemon version for diagnostics; 'dev' until #12 ships src/VERSION."""
+    try:
+        text = VERSION_FILE.read_text(encoding="utf-8").strip()
+        if text:
+            return text.splitlines()[0].strip()[:32]
+    except Exception:
+        pass
+    return "dev"
+
+
+def rotate_crash_log():
+    try:
+        if CRASH_LOG.exists() and CRASH_LOG.stat().st_size > CRASH_LOG_MAX_BYTES:
+            try:
+                if CRASH_LOG_BACKUP.exists():
+                    CRASH_LOG_BACKUP.unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                os.replace(str(CRASH_LOG), str(CRASH_LOG_BACKUP))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+_ERROR_RING = []
+_ERROR_RING_MAX = 20
+
+
+def record_error(line):
+    try:
+        text = str(line).strip().replace("\r", " ").replace("\n", " ")
+        if len(text) > 300:
+            text = text[:300] + "..."
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _ERROR_RING.append(f"[{stamp}] {text}")
+        del _ERROR_RING[:-_ERROR_RING_MAX]
+    except Exception:
+        pass
+
+
+def write_crash_log(line):
+    rotate_crash_log()
+    try:
+        with open(CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(str(line).rstrip("\n") + "\n")
+    except Exception:
+        pass
+    record_error(line)
 
 
 def valid_fps(num, den):
@@ -1085,6 +1142,39 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"presets": load_presets()})
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)
+        elif parsed.path == "/api/diag":
+            if self._api_forbidden():
+                self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
+                return
+            try:
+                import platform
+                crash_size = None
+                try:
+                    if CRASH_LOG.exists():
+                        crash_size = CRASH_LOG.stat().st_size
+                except Exception:
+                    crash_size = None
+                self.send_json({
+                    "app_version": get_app_version(),
+                    "python_version": platform.python_version(),
+                    "platform": platform.system(),
+                    "port": CURRENT_PORT,
+                    "fps_num": session.fps_num,
+                    "fps_den": session.fps_den,
+                    "fps": session.get_fps_float(),
+                    "session_active": session.session_id is not None,
+                    "markers_count": len(session.markers),
+                    "output_mode": "flat" if session.flat_mode else "folder",
+                    "enabled_formats": session.enabled_formats(),
+                    "folder_naming": session.folder_naming,
+                    "paused": session.paused,
+                    "recording_dir_set": session.recording_dir is not None,
+                    "custom_output_dir_set": session.custom_output_dir is not None,
+                    "crash_log_bytes": crash_size,
+                    "recent_errors": list(_ERROR_RING),
+                })
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=500)
         elif parsed.path == "/api/open_folder":
             if self._api_forbidden():
                 self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
@@ -1290,8 +1380,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def log_error(self, format, *args):
         try:
-            with open(SCRIPT_DIR / "crash.log", "a", encoding="utf-8") as f:
-                f.write(f"[HTTP Error] {format % args}\n")
+            write_crash_log(f"[HTTP Error] {format % args}")
         except Exception:
             pass
 
@@ -1302,8 +1391,7 @@ class ResilientHTTPServer(ThreadingHTTPServer):
     def handle_error(self, request, client_address):
         import traceback
         try:
-            with open(SCRIPT_DIR / "crash.log", "a", encoding="utf-8") as f:
-                f.write(f"[Server Error from {client_address}]:\n{traceback.format_exc()}\n")
+            write_crash_log(f"[Server Error from {client_address}]:\n{traceback.format_exc()}")
         except Exception:
             pass
 
@@ -1331,8 +1419,7 @@ def run():
                     pass
             continue
     if not httpd or bound is None:
-        with open(SCRIPT_DIR / "crash.log", "a", encoding="utf-8") as f:
-            f.write("Failed to bind ports 8765-8770.\n")
+        write_crash_log("Failed to bind ports 8765-8770.")
         return
     CURRENT_PORT = bound
     try:
@@ -1347,8 +1434,7 @@ def run():
     except Exception:
         import traceback
         try:
-            with open(SCRIPT_DIR / "crash.log", "a", encoding="utf-8") as f:
-                f.write(f"[serve_forever died]:\n{traceback.format_exc()}\n")
+            write_crash_log(f"[serve_forever died]:\n{traceback.format_exc()}")
         except Exception:
             pass
     finally:
@@ -1368,7 +1454,6 @@ if __name__ == "__main__":
     except Exception:
         import traceback
         try:
-            with open(Path(__file__).parent / "crash.log", "a", encoding="utf-8") as f:
-                f.write(traceback.format_exc() + "\n")
+            write_crash_log(traceback.format_exc())
         except Exception:
             pass
