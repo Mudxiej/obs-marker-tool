@@ -1318,8 +1318,17 @@
       });
   }
 
-  // Poll at 150ms for responsive global in-game hotkey detection
-  setInterval(pollServerSync, 150);
+  // Adaptive poll: 150ms while recording for responsive in-game hotkey
+  // detection, 1000ms idle to cut connection churn ~7x. Freeze path is
+  // event-driven (flag + pendingFreeze), so idle throttle costs nothing.
+  function schedulePoll() {
+    setTimeout(() => {
+      pollServerSync();
+      schedulePoll();
+    }, isRecording ? 150 : 1000);
+  }
+
+  schedulePoll();
 
   // Init
   renderChips();
