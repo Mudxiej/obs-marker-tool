@@ -1163,6 +1163,11 @@ def flag_watcher():
 threading.Thread(target=flag_watcher, daemon=True).start()
 
 class RequestHandler(BaseHTTPRequestHandler):
+    # HTTP/1.1 keep-alive: the 150ms dock poll reuses one socket instead of
+    # churning a TCP connection per request (TIME_WAIT pileup). Safe because
+    # all body paths set Content-Length (OPTIONS sends 0 explicitly),
+    # and stdlib send_error closes explicitly.
+    protocol_version = "HTTP/1.1"
     def _origin(self):
         try:
             return (self.headers.get('Origin') or '').strip()
@@ -1186,6 +1191,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(200)
+        # Zero-length body framed explicitly: without Content-Length an
+        # HTTP/1.1 keep-alive client would wait for a terminator forever.
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def send_json(self, data, status=200):
@@ -1538,6 +1546,8 @@ class RequestHandler(BaseHTTPRequestHandler):
 class ResilientHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
+    # SYN headroom for encode-spike bursts; kernel-side, no memory concern.
+    request_queue_size = 128
 
     def handle_error(self, request, client_address):
         import traceback
