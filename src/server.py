@@ -1217,6 +1217,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         session.check_freeze_flag()
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ["/", "/index.html"]:
+            # If loaded via http://localhost, redirect to http://127.0.0.1 so the
+            # document origin itself is IPv4 literal (guards against [::1] hangs).
+            host = self.headers.get("Host", "").lower()
+            if host.startswith("localhost"):
+                target = f"http://127.0.0.1:{CURRENT_PORT}/"
+                if parsed.query:
+                    target += f"?{parsed.query}"
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             index_file = Path(__file__).parent / "index.html"
             if index_file.exists():
                 with open(index_file, "rb") as f:
