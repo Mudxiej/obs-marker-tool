@@ -447,6 +447,7 @@
   let savedStateTimer = null;
   let isUndoActive = false;
   let isSavedActive = false;
+  let isSaving = false;
   let obsSocket = null;
   const WS_PORTS = [4456, 4455];
   let portIndex = 0;
@@ -757,7 +758,8 @@
     const btnSave = document.getElementById('btnSave');
 
     // Save button is ONLY enabled if actively recording AND input has non-empty text!
-    btnSave.disabled = (!isRecording || inputVal.length === 0);
+    // Locked while a save is in flight so double-Enter can't duplicate.
+    btnSave.disabled = (!isRecording || inputVal.length === 0 || isSaving);
 
     if (isUndoActive) return;
 
@@ -846,8 +848,11 @@
   });
 
   // --- SAVE LOGIC ---
+  // Drafts survive until the server acks: input + frozen timestamp are
+  // cleared only on success. An in-flight guard stops Enter/chip spam
+  // from spawning duplicate markers during the fetch/retry window.
   function handleSaveAction() {
-    if (!isRecording) return;
+    if (!isRecording || isSaving) return;
     const input = document.getElementById('dockInput');
     const desc = input.value.trim();
     if (!desc) return; // Non-empty guard!
@@ -855,33 +860,26 @@
     const timeToSave = selectedTimestamp || currentRecordingTimecode;
 
     commitMarker(timeToSave, desc);
-
-    input.value = '';
-    resetClockButton();
-    updateUIStates();
   }
 
   function commitMarker(time, desc) {
     // Only show Saved!/Undo after the server confirms the write.
     // On failure show a transient error placeholder instead of fake success.
     // Paused flag travels for diagnostics; exports stay timecode-only.
+    isSaving = true;
+    updateUIStates();
     const wasPaused = isPaused;
-    fetch(apiUrl("/api/save_marker"), {
+    const payload = JSON.stringify({ timecode: time, name: desc, paused: wasPaused });
+    let retried = false;
+
+    const postOnce = () => fetch(apiUrl("/api/save_marker"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ timecode: time, name: desc, paused: wasPaused })
-    })
-    .then(res => res.json())
-    .then(data => {
-      if (data.success) {
-        savedMarkersCount = data.count || (savedMarkersCount + 1);
-        updateMarkerCounter();
-        triggerUndoState();
-      } else {
-        throw new Error(data.error || "save failed");
-      }
-    })
-    .catch(err => {
+      body: payload
+    }).then(res => res.json());
+
+    const showFailure = (err) => {
+      isSaving = false;
       console.error("Save error:", err);
       const input = document.getElementById('dockInput');
       const prev = input.placeholder;
@@ -891,7 +889,39 @@
       input.placeholder = msg.length > 60 ? msg.slice(0, 60) : msg;
       const shown = input.placeholder;
       setTimeout(() => { if (input.placeholder === shown) input.placeholder = prev; }, 2500);
-    });
+      updateUIStates();
+    };
+
+    const attempt = () => {
+      postOnce()
+        .then(data => {
+          if (data.success) {
+            isSaving = false;
+            savedMarkersCount = data.count || (savedMarkersCount + 1);
+            updateMarkerCounter();
+            // Clear the draft only now that the marker is safely stored.
+            document.getElementById('dockInput').value = '';
+            resetClockButton();
+            triggerUndoState();
+            updateUIStates();
+          } else {
+            // Application error (e.g. 400): show it, keep the draft, never retry.
+            showFailure(new Error(data.error || "save failed"));
+          }
+        })
+        .catch(err => {
+          // Transport failure only (fetch rejected, no response received):
+          // one retry after 250ms, then surface and keep the draft.
+          if (err instanceof TypeError && !retried) {
+            retried = true;
+            setTimeout(attempt, 250);
+            return;
+          }
+          showFailure(err);
+        });
+    };
+
+    attempt();
   }
 
   // --- PRESETS & RIGHT CLICK DELETION ---
@@ -928,10 +958,9 @@
       chip.title = `Left-click: save "${tag}" | Right-click: delete tag`;
 
       chip.onclick = () => {
-        if (!isRecording) return;
+        if (!isRecording || isSaving) return;
         const timeToSave = selectedTimestamp || currentRecordingTimecode;
         commitMarker(timeToSave, tag);
-        resetClockButton();
       };
 
       chip.oncontextmenu = (e) => {
