@@ -136,6 +136,20 @@ def parse_version_tuple(value):
 _UPDATE_CACHE = {"latest": None, "checked_at": 0.0, "next_interval": UPDATE_CHECK_MIN_SECONDS}
 _UPDATE_LOCK = threading.Lock()
 
+# Single reentrant lock for all MarkerSession mutations. Reentrant because
+# add_marker -> flush_files and undo -> cleanup -> reset nest; a plain Lock
+# would self-deadlock on the first save.
+_SESSION_LOCK = threading.RLock()
+
+
+def _with_session_lock(fn):
+    def wrapper(*args, **kwargs):
+        with _SESSION_LOCK:
+            return fn(*args, **kwargs)
+    wrapper.__name__ = getattr(fn, "__name__", "wrapped")
+    wrapper.__doc__ = getattr(fn, "__doc__", None)
+    return wrapper
+
 
 def _load_update_cache():
     try:
@@ -585,6 +599,7 @@ class MarkerSession:
 
     FLAT_EXT = {"txt": "txt", "csv": "csv", "xml": "xml", "fcpxml": "fcpxml", "json": "json"}
 
+    @_with_session_lock
     def start_new_session_if_needed(self):
         if not self.session_id:
             self.load_config()
@@ -671,6 +686,7 @@ class MarkerSession:
         frame_in = int(round(total_seconds * fps_f))
         return total_seconds, frame_in
 
+    @_with_session_lock
     def add_marker(self, timecode, name, paused=False):
         self.start_new_session_if_needed()
         display_name = name.strip() if name and name.strip() else f"Marker {len(self.markers) + 1}"
@@ -694,6 +710,7 @@ class MarkerSession:
         self.flush_files()
         return marker_entry
 
+    @_with_session_lock
     def undo_last_marker(self):
         if not self.markers:
             return None
@@ -717,6 +734,7 @@ class MarkerSession:
         except Exception:
             pass
 
+    @_with_session_lock
     def flush_files(self):
         if self.flat_mode:
             if not self.flat_path:
@@ -913,6 +931,7 @@ class MarkerSession:
 
         self.files_created = True
 
+    @_with_session_lock
     def cleanup_session_files(self):
         """Delete session outputs: folder mode purges the folder, flat mode unlinks one file."""
         if self.flat_mode:
@@ -996,6 +1015,7 @@ class MarkerSession:
         # 5. Completely reset session state
         self.reset_session()
 
+    @_with_session_lock
     def reset_session(self):
         if self.folder_path and self.folder_path.exists() and len(self.markers) == 0:
             try:
@@ -1034,6 +1054,7 @@ class MarkerSession:
             return base, None
         return base, stem
 
+    @_with_session_lock
     def finalize_session(self, output_path):
         """Rename outputs to the video stem on recording stop.
 
@@ -1200,51 +1221,54 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
                 return
             update_available, latest_version = get_update_state()
-            data = {
-                "active_session": session.session_id,
-                "markers_count": len(session.markers),
-                "files_created": session.files_created,
-                "folder": str(session.flat_path) if session.flat_mode and session.flat_path else (str(session.folder_path) if session.folder_path else None),
-                "output_mode": "flat" if session.flat_mode else "folder",
-                "enabled_formats": session.enabled_formats(),
-                "app_version": get_app_version(),
-                "update_available": update_available,
-                "latest_version": latest_version,
-                "base_dir": str(session.get_base_dir()),
-                "recording_dir": str(session.recording_dir) if session.recording_dir else None,
-                "custom_output_dir": str(session.custom_output_dir) if session.custom_output_dir else None,
-                "freeze_event": session.last_freeze_time,
-                "fps_num": session.fps_num,
-                "fps_den": session.fps_den,
-                "fps": session.get_fps_float(),
-                "paused": session.paused,
-                "folder_naming": session.folder_naming,
-                "recording_filename": session.recording_filename,
-                "port": CURRENT_PORT
-            }
+            with _SESSION_LOCK:
+                data = {
+                    "active_session": session.session_id,
+                    "markers_count": len(session.markers),
+                    "files_created": session.files_created,
+                    "folder": str(session.flat_path) if session.flat_mode and session.flat_path else (str(session.folder_path) if session.folder_path else None),
+                    "output_mode": "flat" if session.flat_mode else "folder",
+                    "enabled_formats": session.enabled_formats(),
+                    "app_version": get_app_version(),
+                    "update_available": update_available,
+                    "latest_version": latest_version,
+                    "base_dir": str(session.get_base_dir()),
+                    "recording_dir": str(session.recording_dir) if session.recording_dir else None,
+                    "custom_output_dir": str(session.custom_output_dir) if session.custom_output_dir else None,
+                    "freeze_event": session.last_freeze_time,
+                    "fps_num": session.fps_num,
+                    "fps_den": session.fps_den,
+                    "fps": session.get_fps_float(),
+                    "paused": session.paused,
+                    "folder_naming": session.folder_naming,
+                    "recording_filename": session.recording_filename,
+                    "port": CURRENT_PORT
+                }
             self.send_json(data)
         elif parsed.path == "/api/config":
             if self._api_forbidden():
                 self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
                 return
-            self.send_json({
-                "custom_output_dir": session.custom_output_dir,
-                "recording_dir": session.recording_dir,
-                "base_dir": str(session.get_base_dir()),
-                "fps_num": session.fps_num,
-                "fps_den": session.fps_den,
-                "fps": session.get_fps_float(),
-                "paused": session.paused,
-                "folder_naming": session.folder_naming,
-                "recording_filename": session.recording_filename,
-                "enabled_formats": session.enabled_formats(),
-                "export_txt": session.export_txt,
-                "export_csv": session.export_csv,
-                "export_xml": session.export_xml,
-                "export_fcpxml": session.export_fcpxml,
-                "export_json": session.export_json,
-                "port": CURRENT_PORT
-            })
+            with _SESSION_LOCK:
+                cfg = {
+                    "custom_output_dir": session.custom_output_dir,
+                    "recording_dir": session.recording_dir,
+                    "base_dir": str(session.get_base_dir()),
+                    "fps_num": session.fps_num,
+                    "fps_den": session.fps_den,
+                    "fps": session.get_fps_float(),
+                    "paused": session.paused,
+                    "folder_naming": session.folder_naming,
+                    "recording_filename": session.recording_filename,
+                    "enabled_formats": session.enabled_formats(),
+                    "export_txt": session.export_txt,
+                    "export_csv": session.export_csv,
+                    "export_xml": session.export_xml,
+                    "export_fcpxml": session.export_fcpxml,
+                    "export_json": session.export_json,
+                    "port": CURRENT_PORT
+                }
+            self.send_json(cfg)
         elif parsed.path == "/api/presets":
             if self._api_forbidden():
                 self.send_json({"success": False, "error": "Forbidden origin"}, status=403)
@@ -1265,25 +1289,27 @@ class RequestHandler(BaseHTTPRequestHandler):
                         crash_size = CRASH_LOG.stat().st_size
                 except Exception:
                     crash_size = None
-                self.send_json({
-                    "app_version": get_app_version(),
-                    "python_version": platform.python_version(),
-                    "platform": platform.system(),
-                    "port": CURRENT_PORT,
-                    "fps_num": session.fps_num,
-                    "fps_den": session.fps_den,
-                    "fps": session.get_fps_float(),
-                    "session_active": session.session_id is not None,
-                    "markers_count": len(session.markers),
-                    "output_mode": "flat" if session.flat_mode else "folder",
-                    "enabled_formats": session.enabled_formats(),
-                    "folder_naming": session.folder_naming,
-                    "paused": session.paused,
-                    "recording_dir_set": session.recording_dir is not None,
-                    "custom_output_dir_set": session.custom_output_dir is not None,
-                    "crash_log_bytes": crash_size,
-                    "recent_errors": list(_ERROR_RING),
-                })
+                with _SESSION_LOCK:
+                    diag = {
+                        "app_version": get_app_version(),
+                        "python_version": platform.python_version(),
+                        "platform": platform.system(),
+                        "port": CURRENT_PORT,
+                        "fps_num": session.fps_num,
+                        "fps_den": session.fps_den,
+                        "fps": session.get_fps_float(),
+                        "session_active": session.session_id is not None,
+                        "markers_count": len(session.markers),
+                        "output_mode": "flat" if session.flat_mode else "folder",
+                        "enabled_formats": session.enabled_formats(),
+                        "folder_naming": session.folder_naming,
+                        "paused": session.paused,
+                        "recording_dir_set": session.recording_dir is not None,
+                        "custom_output_dir_set": session.custom_output_dir is not None,
+                        "crash_log_bytes": crash_size,
+                        "recent_errors": list(_ERROR_RING),
+                    }
+                self.send_json(diag)
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)
         elif parsed.path == "/api/open_folder":
@@ -1363,73 +1389,77 @@ class RequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/config":
             try:
                 payload = json.loads(body.decode("utf-8")) if body else {}
-                if "recording_dir" in payload:
-                    rec = payload["recording_dir"]
-                    if isinstance(rec, str):
-                        rec = rec.strip()
-                        if rec and is_unc_path(rec):
+                # Guard all session field updates so OBS WebSocket config
+                # bursts can't interleave with an active flush/undo/finalize.
+                with _SESSION_LOCK:
+                    if "recording_dir" in payload:
+                        rec = payload["recording_dir"]
+                        if isinstance(rec, str):
+                            rec = rec.strip()
+                            if rec and is_unc_path(rec):
+                                self.send_json({"success": False, "error": "UNC network paths are not allowed"}, status=400)
+                                return
+                            session.recording_dir = rec if rec else None
+                        elif rec is None:
+                            session.recording_dir = None
+                    if "custom_output_dir" in payload:
+                        raw = payload["custom_output_dir"]
+                        val = raw.strip() if isinstance(raw, str) else ""
+                        if val and is_unc_path(val):
                             self.send_json({"success": False, "error": "UNC network paths are not allowed"}, status=400)
                             return
-                        session.recording_dir = rec if rec else None
-                    elif rec is None:
-                        session.recording_dir = None
-                if "custom_output_dir" in payload:
-                    raw = payload["custom_output_dir"]
-                    val = raw.strip() if isinstance(raw, str) else ""
-                    if val and is_unc_path(val):
-                        self.send_json({"success": False, "error": "UNC network paths are not allowed"}, status=400)
-                        return
-                    session.custom_output_dir = val if val else None
-                    session.save_config()
-                if "fps_num" in payload or "fps_den" in payload:
-                    try:
-                        num = int(payload.get("fps_num", session.fps_num))
-                        den = int(payload.get("fps_den", session.fps_den))
-                        if valid_fps(num, den):
-                            session.fps_num, session.fps_den = num, den
-                            session.save_config()
-                    except Exception:
-                        pass
-                if "paused" in payload:
-                    session.paused = bool(payload["paused"])
-                if "folder_naming" in payload:
-                    naming = payload["folder_naming"]
-                    session.folder_naming = "video" if isinstance(naming, str) and naming.strip().lower() == "video" else "timestamp"
-                    session.save_config()
-                exports_changed = False
-                for kind in EXPORT_KINDS:
-                    key = f"export_{kind}"
-                    if key in payload:
-                        setattr(session, key, parse_export_bool(payload[key], True))
-                        exports_changed = True
-                if exports_changed:
-                    session.save_config()
-                if "recording_filename" in payload:
-                    rec_fn = payload["recording_filename"]
-                    if rec_fn is None:
-                        session.recording_filename = None
-                    elif isinstance(rec_fn, str):
-                        rec_fn = rec_fn.replace("/", "\\").split("\\")[-1].strip()
-                        session.recording_filename = rec_fn[:120] if rec_fn else None
-                self.send_json({
-                    "success": True,
-                    "recording_dir": session.recording_dir,
-                    "custom_output_dir": session.custom_output_dir,
-                    "base_dir": str(session.get_base_dir()),
-                    "fps_num": session.fps_num,
-                    "fps_den": session.fps_den,
-                    "fps": session.get_fps_float(),
-                    "paused": session.paused,
-                    "folder_naming": session.folder_naming,
-                    "recording_filename": session.recording_filename,
-                    "enabled_formats": session.enabled_formats(),
-                    "export_txt": session.export_txt,
-                    "export_csv": session.export_csv,
-                    "export_xml": session.export_xml,
-                    "export_fcpxml": session.export_fcpxml,
-                    "export_json": session.export_json,
-                    "port": CURRENT_PORT
-                })
+                        session.custom_output_dir = val if val else None
+                        session.save_config()
+                    if "fps_num" in payload or "fps_den" in payload:
+                        try:
+                            num = int(payload.get("fps_num", session.fps_num))
+                            den = int(payload.get("fps_den", session.fps_den))
+                            if valid_fps(num, den):
+                                session.fps_num, session.fps_den = num, den
+                                session.save_config()
+                        except Exception:
+                            pass
+                    if "paused" in payload:
+                        session.paused = bool(payload["paused"])
+                    if "folder_naming" in payload:
+                        naming = payload["folder_naming"]
+                        session.folder_naming = "video" if isinstance(naming, str) and naming.strip().lower() == "video" else "timestamp"
+                        session.save_config()
+                    exports_changed = False
+                    for kind in EXPORT_KINDS:
+                        key = f"export_{kind}"
+                        if key in payload:
+                            setattr(session, key, parse_export_bool(payload[key], True))
+                            exports_changed = True
+                    if exports_changed:
+                        session.save_config()
+                    if "recording_filename" in payload:
+                        rec_fn = payload["recording_filename"]
+                        if rec_fn is None:
+                            session.recording_filename = None
+                        elif isinstance(rec_fn, str):
+                            rec_fn = rec_fn.replace("/", "\\").split("\\")[-1].strip()
+                            session.recording_filename = rec_fn[:120] if rec_fn else None
+                    resp = {
+                        "success": True,
+                        "recording_dir": session.recording_dir,
+                        "custom_output_dir": session.custom_output_dir,
+                        "base_dir": str(session.get_base_dir()),
+                        "fps_num": session.fps_num,
+                        "fps_den": session.fps_den,
+                        "fps": session.get_fps_float(),
+                        "paused": session.paused,
+                        "folder_naming": session.folder_naming,
+                        "recording_filename": session.recording_filename,
+                        "enabled_formats": session.enabled_formats(),
+                        "export_txt": session.export_txt,
+                        "export_csv": session.export_csv,
+                        "export_xml": session.export_xml,
+                        "export_fcpxml": session.export_fcpxml,
+                        "export_json": session.export_json,
+                        "port": CURRENT_PORT
+                    }
+                self.send_json(resp)
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=500)
 
