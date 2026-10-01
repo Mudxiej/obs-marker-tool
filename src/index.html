@@ -463,11 +463,13 @@
   let staleFallbackTimer = null;
   let currentFpsNum = 60;
   let currentFpsDen = 1;
-  // Daemon port discovery: the dock is normally same-origin
-  // (http://127.0.0.1:<port>/), so apiBase stays "". Under file:///
-  // (detached testing) we probe 8765-8770 for the live daemon.
-  let apiBase = "";
   let serverPort = (location.port || "8765").toString();
+  // Pin apiBase to IPv4 127.0.0.1 literal so docks opened via localhost
+  // never trigger RFC 6724 IPv6 [::1] connection hangs. Under file:///
+  // (detached testing) discoverDaemonPort() probes 8765-8770.
+  let apiBase = (location.protocol === "http:" || location.protocol === "https:")
+    ? `http://127.0.0.1:${serverPort}`
+    : "";
   let appVersion = "dev";
   let updateAvailable = false;
   let latestVersion = null;
@@ -1272,6 +1274,9 @@
           const ps = String(data.port);
           if (ps !== serverPort) {
             serverPort = ps;
+            if (location.protocol === "http:" || location.protocol === "https:") {
+              apiBase = `http://127.0.0.1:${ps}`;
+            }
             updateFpsTooltip();
           }
         }
