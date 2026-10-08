@@ -91,31 +91,15 @@ local function read_saved_port()
     return nil
 end
 
-local function probe_port(port)
-    local res = os.execute('curl.exe -s --fail --connect-timeout 1 http://127.0.0.1:' .. tostring(port) .. '/api/status > NUL 2>&1')
-    return res == 0 or res == true
-end
-
-local function find_active_port()
-    local saved = read_saved_port()
-    if saved and probe_port(saved) then
-        return saved
-    end
-    for port = 8765, 8770 do
-        if probe_port(port) then
-            return port
-        end
-    end
-    return nil
-end
-
 local function on_open_folder(props, prop)
     if custom_output_dir ~= nil and custom_output_dir ~= "" then
         -- Escape embedded quotes to avoid command injection via crafted path
         local safe = string.gsub(custom_output_dir, '"', '')
         os.execute('start "" explorer.exe "' .. safe .. '"')
     else
-        local port = find_active_port() or 8765
+        -- Port from file only: no shell probe here, so opening the folder
+        -- never flashes a console. Falls back to 8765 when unknown.
+        local port = read_saved_port() or 8765
         os.execute('start "" curl.exe -s --connect-timeout 2 http://127.0.0.1:' .. tostring(port) .. '/api/open_folder')
     end
     return true
@@ -187,12 +171,10 @@ end
 function script_load(settings)
     local win_dir = get_script_dir()
 
-    -- Single-instance guard: reuse a healthy server on the saved port or
-    -- anywhere in 8765-8770; launch the daemon only if all probes fail.
-    if not find_active_port() then
-        -- Start python server silently via VBS without blocking OBS
-        os.execute('start "" wscript.exe "' .. win_dir .. 'run_silent.vbs"')
-    end
+    -- Single-instance guard lives in run_silent.vbs (silent WinHTTP probe,
+    -- zero console windows). Lua must not curl-probe here: every os.execute
+    -- spawns a visible cmd.exe flash on Windows.
+    os.execute('start "" wscript.exe "' .. win_dir .. 'run_silent.vbs"')
 
     -- Register global OBS hotkey: appears in Settings -> Hotkeys -> "Marker Tool: Freeze Timestamp"
     hotkey_id = obs.obs_hotkey_register_frontend("marker_tool.freeze", "Marker Tool: Freeze Timestamp", trigger_freeze)
