@@ -311,6 +311,19 @@
     border-color: var(--accent-hover);
   }
 
+  /* Reorder mode (hold 0.5s): elevated chip with grabbing cursor */
+  .dock-chip.dragging {
+    background: var(--accent);
+    color: #ffffff;
+    border-color: #00d2ff;
+    cursor: grabbing;
+    opacity: 0.9;
+    position: relative;
+    z-index: 10;
+    user-select: none;
+    touch-action: none;
+  }
+
   /* Update badge: 18px amber pill, hidden unless an update is available */
   .update-badge {
     background: rgba(245, 158, 11, 0.18);
@@ -957,13 +970,102 @@
       const chip = document.createElement('div');
       chip.className = 'dock-chip';
       chip.textContent = tag;
-      chip.title = `Left-click: save "${tag}" | Right-click: delete tag`;
+      chip.title = `Click: save "${tag}" | Hold 0.5s + drag: reorder | Right-click: delete tag`;
 
-      chip.onclick = () => {
-        if (!isRecording || isSaving) return;
-        const timeToSave = selectedTimestamp || currentRecordingTimecode;
-        commitMarker(timeToSave, tag);
+      // Press-vs-hold disambiguation: quick click saves (existing
+      // behavior), >500ms hold enters horizontal reorder mode, release
+      // beyond 8px of movement never saves (no accidental markers).
+      let pressTimer = null;
+      let pressX = 0;
+      let moved = false;
+      let dragging = false;
+
+      const cancelPress = () => {
+        clearTimeout(pressTimer);
+        pressTimer = null;
       };
+
+      const endDrag = (commit) => {
+        if (commit) {
+          // Read live DOM order back into presets, then persist.
+          const order = [];
+          container.querySelectorAll('.dock-chip').forEach(el => {
+            order.push(el.textContent);
+          });
+          userPresets = order.filter(t => typeof t === 'string' && t.length > 0);
+          renderChips();
+          syncPresetsToServer();
+        } else {
+          chip.classList.remove('dragging');
+          chip.style.transform = '';
+        }
+        dragging = false;
+      };
+
+      chip.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        pressX = e.clientX;
+        moved = false;
+        dragging = false;
+        cancelPress();
+        pressTimer = setTimeout(() => {
+          dragging = true;
+          chip.classList.add('dragging');
+          try { chip.setPointerCapture(e.pointerId); } catch (err) {}
+        }, 500);
+      });
+
+      chip.addEventListener('pointermove', (e) => {
+        if (e.buttons !== 1) return;
+        if (!dragging) {
+          if (Math.abs(e.clientX - pressX) > 8) {
+            moved = true;
+            cancelPress();
+          }
+          return;
+        }
+        e.preventDefault();
+        const dx = e.clientX - pressX;
+        chip.style.transform = `translateX(${dx}px)`;
+        // Live insert: find chip under pointer, slot before/after midpoint.
+        const under = document.elementFromPoint(e.clientX, e.clientY);
+        const target = under && under.closest ? under.closest('.dock-chip') : null;
+        if (target && target !== chip && container.contains(target)) {
+          const rect = target.getBoundingClientRect();
+          const before = (e.clientX < rect.left + rect.width / 2);
+          container.removeChild(chip);
+          chip.style.transform = '';
+          pressX = e.clientX;
+          if (before) {
+            container.insertBefore(chip, target);
+          } else {
+            container.insertBefore(chip, target.nextSibling);
+          }
+        }
+      });
+
+      const onUp = (e) => {
+        cancelPress();
+        if (dragging) {
+          chip.classList.remove('dragging');
+          chip.style.transform = '';
+          endDrag(true);
+          return;
+        }
+        // Plain click: save only when the pointer barely moved.
+        if (!moved && e.button === 0) {
+          if (!isRecording || isSaving) return;
+          const timeToSave = selectedTimestamp || currentRecordingTimecode;
+          commitMarker(timeToSave, tag);
+        } else {
+          chip.style.transform = '';
+        }
+      };
+      chip.addEventListener('pointerup', onUp);
+      chip.addEventListener('pointercancel', () => {
+        cancelPress();
+        if (dragging) endDrag(false);
+      });
 
       chip.oncontextmenu = (e) => {
         e.preventDefault();
