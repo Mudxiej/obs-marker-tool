@@ -89,7 +89,7 @@ flowchart TD
 2. **Add Dock Panel**:
    - In OBS, go to **Docks** -> **Custom Browser Docks...**.
    - **Dock Name**: `Marker Tool`
-   - **URL**: `http://127.0.0.1:8765/`
+   - **URL**: `http://127.0.0.1:8765/markers/`
    - Click **Apply** and dock the bar wherever convenient.
 3. **Assign Hotkey**:
    - In OBS, go to **Settings** -> **Hotkeys**.

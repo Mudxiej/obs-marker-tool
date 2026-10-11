@@ -71,7 +71,7 @@ echo.
 echo 2. Add Custom Browser Dock:
 echo    - In OBS, go to: Docks -^> Custom Browser Docks...
 echo    - Dock Name: Marker Tool
-echo    - URL: http://127.0.0.1:8765/
+echo    - URL: http://127.0.0.1:8765/markers/
 echo    - Click Apply and dock the panel above or below your controls.
 echo.
 echo 3. Bind In-Game Hotkey:
