@@ -1213,29 +1213,54 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _redirect(self, target):
+        self.send_response(302)
+        self.send_header("Location", target)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _serve_dock(self, parsed):
+        # If loaded via http://localhost, redirect to http://127.0.0.1 so the
+        # document origin itself is IPv4 literal (guards against [::1] hangs).
+        # Port comes from the Host header (the port the client actually used),
+        # not the CURRENT_PORT global, so fallback binds stay correct.
+        host = self.headers.get("Host", "").lower()
+        if host.startswith("localhost"):
+            port = host.split(":")[-1] if ":" in host else str(CURRENT_PORT)
+            if not port.isdigit():
+                port = str(CURRENT_PORT)
+            target = f"http://127.0.0.1:{port}{parsed.path}"
+            if parsed.query:
+                target += f"?{parsed.query}"
+            self._redirect(target)
+            return
+        index_file = Path(__file__).parent / "index.html"
+        if index_file.exists():
+            with open(index_file, "rb") as f:
+                content = f.read()
+            self.send_html(content)
+        else:
+            self.send_error(404, "index.html not found")
+
     def do_GET(self):
         session.check_freeze_flag()
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path in ["/", "/index.html"]:
-            # If loaded via http://localhost, redirect to http://127.0.0.1 so the
-            # document origin itself is IPv4 literal (guards against [::1] hangs).
+        if parsed.path in ["/markers", "/markers/", "/markers/index.html"]:
+            self._serve_dock(parsed)
+        elif parsed.path in ["/", "/index.html"]:
+            # Legacy root URL: redirect to the namespaced dock so old
+            # registrations keep working.
             host = self.headers.get("Host", "").lower()
             if host.startswith("localhost"):
-                target = f"http://127.0.0.1:{CURRENT_PORT}/"
-                if parsed.query:
-                    target += f"?{parsed.query}"
-                self.send_response(302)
-                self.send_header("Location", target)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            index_file = Path(__file__).parent / "index.html"
-            if index_file.exists():
-                with open(index_file, "rb") as f:
-                    content = f.read()
-                self.send_html(content)
+                port = host.split(":")[-1] if ":" in host else str(CURRENT_PORT)
+                if not port.isdigit():
+                    port = str(CURRENT_PORT)
+                target = f"http://127.0.0.1:{port}/markers/"
             else:
-                self.send_error(404, "index.html not found")
+                target = "/markers/"
+            if parsed.query:
+                target += f"?{parsed.query}"
+            self._redirect(target)
         elif parsed.path == "/api/status":
             if self._api_forbidden():
                 self.send_json({"success": False, "error": "Forbidden origin"}, status=403)

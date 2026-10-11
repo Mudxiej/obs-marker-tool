@@ -44,7 +44,7 @@ Explore in-depth documentation across dedicated topics:
 
 ## Quick Reference Commands
 
-- Default HTTP Server Address: `http://127.0.0.1:8765/`
+- Default Marker Dock Address: `http://127.0.0.1:8765/markers/` (server root redirects there; `/api/*` unchanged)
 - Default WebSocket Ports Checked: `4456`, `4455`
 - Target Installation Path: `%APPDATA%\obs-studio\scripts\obs-marker-tool\`
 - Default Marker Save Target: Same directory as active OBS recording (auto-discovered via WebSocket)
