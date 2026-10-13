@@ -10,13 +10,6 @@ local export_xml = true
 local export_fcpxml = true
 local export_json = true
 
-function script_description()
-    return "OBS Marker Tool Service\n\n" ..
-           "• Save Folder: Default saves alongside your OBS recordings (next to video files). Use the property below to set a custom folder.\n" ..
-           "• Global Hotkey: Go to OBS Settings -> Hotkeys and search for 'Marker Tool: Freeze Timestamp'. Bind F8 or any key combination!\n" ..
-           "• Server Lifecycle: Automatically started when OBS launches, safely terminated when OBS exits."
-end
-
 local function get_script_dir()
     local p = script_path()
     -- script_path() may return a directory or a full file path depending on OBS version.
@@ -32,6 +25,26 @@ local function get_script_dir()
         p = p .. "\\"
     end
     return p
+end
+
+local function read_saved_port()
+    local win_dir = get_script_dir()
+    local f = io.open(win_dir .. "port.txt", "r")
+    if not f then return nil end
+    local content = f:read("*l") or ""
+    f:close()
+    local port = tonumber((string.gsub(content or "", "%s+", "")))
+    if port and port >= 1 and port <= 65535 then
+        return math.floor(port)
+    end
+    return nil
+end
+
+function script_description()
+    local port = read_saved_port() or 8765
+    return "OBS Marker Tool - Zero-overhead recording marker engine for OBS Studio.\n\n" ..
+           "• Browser Dock: Paste http://127.0.0.1:" .. tostring(port) .. "/markers/ into Docks -> Custom Browser Docks...\n" ..
+           "• GitHub: https://github.com/Mudxiej/obs-marker-tool"
 end
 
 local function read_config_value(key, fallback)
@@ -78,18 +91,6 @@ local function trigger_freeze(pressed)
     end
 end
 
-local function read_saved_port()
-    local win_dir = get_script_dir()
-    local f = io.open(win_dir .. "port.txt", "r")
-    if not f then return nil end
-    local content = f:read("*l") or ""
-    f:close()
-    local port = tonumber((string.gsub(content or "", "%s+", "")))
-    if port and port >= 1 and port <= 65535 then
-        return math.floor(port)
-    end
-    return nil
-end
 
 local function on_open_folder(props, prop)
     if custom_output_dir ~= nil and custom_output_dir ~= "" then
