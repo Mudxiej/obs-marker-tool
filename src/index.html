@@ -324,6 +324,18 @@
     touch-action: none;
   }
 
+  /* Ghost landing slot: hollow placeholder marking the drop position */
+  .dock-chip-placeholder {
+    background: transparent;
+    border: 1px dashed rgba(0, 210, 255, 0.6);
+    border-radius: 2px;
+    height: 18px;
+    line-height: 18px;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    pointer-events: none;
+  }
+
   /* Update badge: 18px amber pill, hidden unless an update is available */
   .update-badge {
     background: rgba(245, 158, 11, 0.18);
@@ -975,29 +987,220 @@
       // Press-vs-hold disambiguation: quick click saves (existing
       // behavior), >500ms hold enters horizontal reorder mode, release
       // beyond 8px of movement never saves (no accidental markers).
+      // Hit-testing is geometric (cached midpoints): elementFromPoint is
+      // unreliable under pointer capture, so it is not used at all.
       let pressTimer = null;
       let pressX = 0;
       let moved = false;
       let dragging = false;
+      let startIndex = idx;
+      let ghost = null;
+      let mids = [];
+      let rafId = 0;
+      let lastX = 0;
+      let lastT = 0;
+      let pendingX = 0;
+      let pendingY = 0;
+      let hasPending = false;
 
       const cancelPress = () => {
         clearTimeout(pressTimer);
         pressTimer = null;
       };
 
+      const stopRaf = () => {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
+        hasPending = false;
+      };
+
+      const cacheMids = () => {
+        mids = [];
+        container.querySelectorAll('.dock-chip:not(.dragging)').forEach(el => {
+          const r = el.getBoundingClientRect();
+          mids.push({ el, mid: r.left + r.width / 2 });
+        });
+      };
+
+      const removeGhost = () => {
+        if (ghost && ghost.parentNode === container) {
+          container.removeChild(ghost);
+        }
+        ghost = null;
+      };
+
+      const makeGhost = (widthPx) => {
+        const g = document.createElement('div');
+        g.className = 'dock-chip-placeholder';
+        g.style.width = `${widthPx}px`;
+        return g;
+      };
+
+      // FLIP-slide static chips around a DOM mutation (transform-only).
+      const flipSlide = (mutate) => {
+        const els = [];
+        container.querySelectorAll('.dock-chip:not(.dragging)').forEach(el => {
+          els.push([el, el.getBoundingClientRect().left]);
+        });
+        mutate();
+        els.forEach(([el, left]) => {
+          if (!el.isConnected) return;
+          const dx = left - el.getBoundingClientRect().left;
+          if (dx) {
+            el.style.transition = 'none';
+            el.style.transform = `translateX(${dx}px)`;
+            requestAnimationFrame(() => {
+              el.style.transition = 'transform 150ms ease-out';
+              el.style.transform = '';
+            });
+          }
+        });
+      };
+
+      const slotIndexFor = (x) => {
+        let slot = 0;
+        for (const m of mids) {
+          if (x >= m.mid) slot++;
+          else break;
+        }
+        return slot;
+      };
+
+      const placeGhost = (slot) => {
+        // Static chips in DOM order (ghost excluded by class).
+        const statics = [];
+        container.querySelectorAll('.dock-chip:not(.dragging)').forEach(el => {
+          statics.push(el);
+        });
+        const ref = statics[slot] || null;
+        const at = ghost && ghost.parentNode === container
+          ? Array.prototype.indexOf.call(container.children, ghost)
+          : -1;
+        // Current ghost slot in terms of static order.
+        let cur = 0;
+        if (at >= 0) {
+          cur = 0;
+          for (const child of container.children) {
+            if (child === ghost) break;
+            if (child.classList && child.classList.contains('dock-chip') &&
+                !child.classList.contains('dragging')) cur++;
+          }
+        }
+        if (at >= 0 && cur === slot) return;
+        flipSlide(() => {
+          removeGhost();
+          if (ref) container.insertBefore(ghost, ref);
+          else container.appendChild(ghost);
+        });
+      };
+
+      const autoScroll = (x) => {
+        const row = document.getElementById('chipScrollRow');
+        if (!row) return false;
+        const r = row.getBoundingClientRect();
+        if (x - r.left < 24) {
+          row.scrollLeft -= 6;
+          return true;
+        }
+        if (r.right - x < 24) {
+          row.scrollLeft += 6;
+          return true;
+        }
+        return false;
+      };
+
+      const dragFrame = () => {
+        rafId = 0;
+        if (!dragging || !hasPending) return;
+        hasPending = false;
+        const now = performance.now();
+        const dt = Math.max(1, now - lastT);
+        const vx = ((pendingX - lastX) / dt) * 1000; // px per second
+        lastX = pendingX;
+        lastT = now;
+        const rot = Math.max(-8, Math.min(8, vx * 0.02));
+        const dx = pendingX - pressX;
+        chip.style.transform = `translateX(${dx}px) scale(1.05) rotate(${rot.toFixed(2)}deg)`;
+        const scrolled = autoScroll(pendingX);
+        if (scrolled) cacheMids();
+        placeGhost(slotIndexFor(pendingX));
+      };
+
+      const queueFrame = (x, y) => {
+        pendingX = x;
+        pendingY = y;
+        hasPending = true;
+        if (!rafId) rafId = requestAnimationFrame(dragFrame);
+      };
+
       const endDrag = (commit) => {
+        stopRaf();
         if (commit) {
-          // Read live DOM order back into presets, then persist.
+          // Build the drop order: statics in DOM order with the dragged
+          // tag slotted where the ghost sits (chip itself never moved).
           const order = [];
-          container.querySelectorAll('.dock-chip').forEach(el => {
-            order.push(el.textContent);
-          });
-          userPresets = order.filter(t => typeof t === 'string' && t.length > 0);
-          renderChips();
-          syncPresetsToServer();
+          for (const child of container.children) {
+            if (child === ghost) {
+              order.push(chip.textContent);
+            } else if (child === chip) {
+              continue;
+            } else if (child.classList && child.classList.contains('dock-chip')) {
+              order.push(child.textContent);
+            }
+          }
+          const clean = order.filter(t => typeof t === 'string' && t.length > 0);
+          const unchanged = clean.length === userPresets.length &&
+            clean.every((t, i) => t === userPresets[i]);
+          if (unchanged) {
+            // Accidental hold with no move: remove ghost, fade out,
+            // no bounce, no persist.
+            removeGhost();
+            chip.classList.remove('dragging');
+            chip.style.transition = 'opacity 150ms ease-out';
+            chip.style.transform = '';
+            chip.style.boxShadow = '';
+            chip.style.opacity = '0.4';
+            setTimeout(() => {
+              chip.style.transition = '';
+              chip.style.opacity = '';
+            }, 160);
+          } else {
+            // Swap ghost for the chip, then spring the visuals home.
+            const r0 = chip.getBoundingClientRect();
+            if (ghost && ghost.parentNode === container) {
+              container.insertBefore(chip, ghost);
+              removeGhost();
+            }
+            const r1 = chip.getBoundingClientRect();
+            const off = r0.left - r1.left;
+            chip.classList.remove('dragging');
+            chip.style.boxShadow = '';
+            chip.style.opacity = '';
+            chip.style.transition = 'none';
+            chip.style.transform = `translateX(${off}px) scale(1.05)`;
+            requestAnimationFrame(() => {
+              chip.style.transition = 'transform 180ms cubic-bezier(.2,.9,.3,1.2)';
+              chip.style.transform = '';
+            });
+            userPresets = clean;
+            syncPresetsToServer();
+            // Rebuild after the settle so the spring stays visible.
+            setTimeout(() => {
+              chip.style.transition = '';
+              renderChips();
+            }, 200);
+          }
         } else {
+          removeGhost();
           chip.classList.remove('dragging');
+          chip.style.transition = '';
           chip.style.transform = '';
+          chip.style.boxShadow = '';
+          chip.style.opacity = '';
+          // Rebuild from unmodified userPresets: restores start order.
+          renderChips();
         }
         dragging = false;
       };
@@ -1009,9 +1212,26 @@
         dragging = false;
         cancelPress();
         pressTimer = setTimeout(() => {
+          // Lift: pop to grabbed state, then drop the transition so drag
+          // tracking stays 1:1 with the pointer.
           dragging = true;
+          startIndex = Array.prototype.indexOf.call(container.children, chip);
           chip.classList.add('dragging');
-          try { chip.setPointerCapture(e.pointerId); } catch (err) {}
+          chip.style.transition = 'transform 120ms cubic-bezier(.2,.9,.3,1.2), opacity 120ms ease-out';
+          chip.style.transform = 'scale(1.05)';
+          chip.style.boxShadow = '0 4px 10px rgba(0, 210, 255, 0.35)';
+          chip.style.opacity = '0.85';
+          setTimeout(() => {
+            if (dragging) chip.style.transition = '';
+          }, 130);
+          const w = chip.getBoundingClientRect().width;
+          ghost = makeGhost(w);
+          cacheMids();
+          lastX = e.clientX;
+          lastY = e.clientY;
+          lastT = performance.now();
+          // NOTE: no setPointerCapture — capture retargets hit-testing and
+          // breaks drop math; geometric midpoints need no capture.
         }, 500);
       });
 
@@ -1025,23 +1245,7 @@
           return;
         }
         e.preventDefault();
-        const dx = e.clientX - pressX;
-        chip.style.transform = `translateX(${dx}px)`;
-        // Live insert: find chip under pointer, slot before/after midpoint.
-        const under = document.elementFromPoint(e.clientX, e.clientY);
-        const target = under && under.closest ? under.closest('.dock-chip') : null;
-        if (target && target !== chip && container.contains(target)) {
-          const rect = target.getBoundingClientRect();
-          const before = (e.clientX < rect.left + rect.width / 2);
-          container.removeChild(chip);
-          chip.style.transform = '';
-          pressX = e.clientX;
-          if (before) {
-            container.insertBefore(chip, target);
-          } else {
-            container.insertBefore(chip, target.nextSibling);
-          }
-        }
+        queueFrame(e.clientX, e.clientY);
       });
 
       const onUp = (e) => {
