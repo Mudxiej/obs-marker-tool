@@ -311,23 +311,26 @@
     border-color: var(--accent-hover);
   }
 
-  /* Reorder mode (hold 0.5s): elevated chip with grabbing cursor */
+  /* Reorder mode: elevated floating chip anywhere on the board */
   .dock-chip.dragging {
     background: var(--accent);
     color: #ffffff;
     border-color: #00d2ff;
     cursor: grabbing;
-    opacity: 0.9;
-    position: relative;
-    z-index: 10;
+    opacity: 0.95;
+    position: fixed;
+    z-index: 9999;
     user-select: none;
     touch-action: none;
+    pointer-events: none;
+    margin: 0;
+    box-sizing: border-box;
   }
 
-  /* Ghost landing slot: hollow placeholder marking the drop position */
+  /* Ghost landing slot: hollow empty block marking the drop space */
   .dock-chip-placeholder {
-    background: transparent;
-    border: 1px dashed rgba(0, 210, 255, 0.6);
+    background: rgba(0, 210, 255, 0.1);
+    border: 1.5px dashed #00d2ff;
     border-radius: 2px;
     height: 18px;
     line-height: 18px;
@@ -984,13 +987,11 @@
       chip.textContent = tag;
       chip.title = `Click: save "${tag}" | Hold 0.35s + drag: reorder | Right-click: delete tag`;
 
-      // Press-vs-hold disambiguation: quick click saves (existing
-      // behavior), >350ms hold enters horizontal reorder mode, release
-      // beyond 8px of movement never saves (no accidental markers).
-      // Hit-testing is geometric (cached midpoints): elementFromPoint is
-      // unreliable under pointer capture, so it is not used at all.
       let pressTimer = null;
       let pressX = 0;
+      let pressY = 0;
+      let grabOffsetX = 0;
+      let grabOffsetY = 0;
       let moved = false;
       let dragging = false;
       let startIndex = idx;
@@ -1002,12 +1003,14 @@
       let pendingX = 0;
       let pendingY = 0;
       let hasPending = false;
-      let baseLeft = 0;
       let chipW = 0;
+      let chipH = 0;
 
       const cancelPress = () => {
-        clearTimeout(pressTimer);
-        pressTimer = null;
+        if (pressTimer) {
+          clearTimeout(pressTimer);
+          pressTimer = null;
+        }
       };
 
       const stopRaf = () => {
@@ -1026,9 +1029,9 @@
         });
       };
 
-      const removeGhost = () => {
-        if (ghost && ghost.parentNode === container) {
-          container.removeChild(ghost);
+      const destroyGhost = () => {
+        if (ghost && ghost.parentNode) {
+          ghost.parentNode.removeChild(ghost);
         }
         ghost = null;
       };
@@ -1043,7 +1046,7 @@
       // FLIP-slide static chips around a DOM mutation (transform-only).
       const flipSlide = (mutate) => {
         const els = [];
-        container.querySelectorAll('.dock-chip:not(.dragging)').forEach(el => {
+        container.querySelectorAll('.dock-chip').forEach(el => {
           els.push([el, el.getBoundingClientRect().left]);
         });
         mutate();
@@ -1071,28 +1074,14 @@
       };
 
       const placeGhost = (slot) => {
-        // Static chips in DOM order (ghost excluded by class).
-        const statics = [];
-        container.querySelectorAll('.dock-chip:not(.dragging)').forEach(el => {
-          statics.push(el);
-        });
+        if (!ghost || !ghost.parentNode) return;
+        const statics = Array.from(container.querySelectorAll('.dock-chip'));
         const ref = statics[slot] || null;
-        const at = ghost && ghost.parentNode === container
-          ? Array.prototype.indexOf.call(container.children, ghost)
-          : -1;
-        // Current ghost slot in terms of static order.
-        let cur = 0;
-        if (at >= 0) {
-          cur = 0;
-          for (const child of container.children) {
-            if (child === ghost) break;
-            if (child.classList && child.classList.contains('dock-chip') &&
-                !child.classList.contains('dragging')) cur++;
-          }
-        }
-        if (at >= 0 && cur === slot) return;
+
+        if (ref && ghost.nextSibling === ref) return;
+        if (!ref && ghost.nextSibling === null) return;
+
         flipSlide(() => {
-          removeGhost();
           if (ref) container.insertBefore(ghost, ref);
           else container.appendChild(ghost);
         });
@@ -1123,15 +1112,14 @@
         lastX = pendingX;
         lastT = now;
         const rot = Math.max(-8, Math.min(8, vx * 0.02));
-        // Clamp the chip inside the visible chips row so it can never
-        // roam freely across the page.
-        const row = document.getElementById('chipScrollRow');
-        let dx = pendingX - pressX;
-        if (row) {
-          const rr = row.getBoundingClientRect();
-          dx = Math.max(rr.left - baseLeft, Math.min(dx, rr.right - baseLeft - chipW));
-        }
-        chip.style.transform = `translateX(${dx}px) scale(1.05) rotate(${rot.toFixed(2)}deg)`;
+
+        // Position floating chip directly with the cursor anywhere on the board!
+        const curLeft = pendingX - grabOffsetX;
+        const curTop = pendingY - grabOffsetY;
+        chip.style.left = `${curLeft}px`;
+        chip.style.top = `${curTop}px`;
+        chip.style.transform = `scale(1.08) rotate(${rot.toFixed(2)}deg)`;
+
         const scrolled = autoScroll(pendingX);
         if (scrolled) cacheMids();
         placeGhost(slotIndexFor(pendingX));
@@ -1146,144 +1134,167 @@
 
       const endDrag = (commit) => {
         stopRaf();
-        if (commit) {
-          // Build the drop order: statics in DOM order with the dragged
-          // tag slotted where the ghost sits (chip itself never moved).
+        if (commit && ghost && ghost.parentNode === container) {
           const order = [];
           for (const child of container.children) {
             if (child === ghost) {
-              order.push(chip.textContent);
-            } else if (child === chip) {
-              continue;
-            } else if (child.classList && child.classList.contains('dock-chip')) {
+              order.push(tag);
+            } else if (child !== chip && child.classList && child.classList.contains('dock-chip')) {
               order.push(child.textContent);
             }
           }
           const clean = order.filter(t => typeof t === 'string' && t.length > 0);
           const unchanged = clean.length === userPresets.length &&
             clean.every((t, i) => t === userPresets[i]);
-          if (unchanged) {
-            // Accidental hold with no move: remove ghost, fade out,
-            // no bounce, no persist.
-            removeGhost();
-            chip.classList.remove('dragging');
-            chip.style.transition = 'opacity 150ms ease-out';
+
+          // Measure floating spot before moving in DOM
+          const rFloating = chip.getBoundingClientRect();
+
+          // Return chip to container in place of ghost
+          container.insertBefore(chip, ghost);
+          destroyGhost();
+
+          chip.classList.remove('dragging');
+          chip.style.position = '';
+          chip.style.left = '';
+          chip.style.top = '';
+          chip.style.width = '';
+          chip.style.height = '';
+          chip.style.zIndex = '';
+          chip.style.pointerEvents = '';
+          chip.style.boxShadow = '';
+          chip.style.borderColor = '';
+
+          // Measure resting position in the row
+          const rLanded = chip.getBoundingClientRect();
+          const offX = rFloating.left - rLanded.left;
+          const offY = rFloating.top - rLanded.top;
+
+          // Spring settle from floating location down into landing slot
+          chip.style.transition = 'none';
+          chip.style.transform = `translate(${offX}px, ${offY}px) scale(1.08)`;
+          requestAnimationFrame(() => {
+            chip.style.transition = 'transform 180ms cubic-bezier(.2,.9,.3,1.2)';
             chip.style.transform = '';
-            chip.style.boxShadow = '';
-            chip.style.opacity = '0.4';
-            setTimeout(() => {
-              chip.style.transition = '';
-              chip.style.opacity = '';
-            }, 160);
-          } else {
-            // Swap ghost for the chip, then spring the visuals home.
-            const r0 = chip.getBoundingClientRect();
-            if (ghost && ghost.parentNode === container) {
-              container.insertBefore(chip, ghost);
-              removeGhost();
-            }
-            const r1 = chip.getBoundingClientRect();
-            const off = r0.left - r1.left;
-            chip.classList.remove('dragging');
-            chip.style.boxShadow = '';
-            chip.style.opacity = '';
-            chip.style.transition = 'none';
-            chip.style.transform = `translateX(${off}px) scale(1.05)`;
-            requestAnimationFrame(() => {
-              chip.style.transition = 'transform 180ms cubic-bezier(.2,.9,.3,1.2)';
-              chip.style.transform = '';
-            });
+          });
+
+          if (!unchanged) {
             userPresets = clean;
             syncPresetsToServer();
-            // Rebuild after the settle so the spring stays visible.
-            setTimeout(() => {
-              chip.style.transition = '';
-              renderChips();
-            }, 200);
           }
+
+          setTimeout(() => {
+            chip.style.transition = '';
+            renderChips();
+          }, 200);
         } else {
-          removeGhost();
+          destroyGhost();
           chip.classList.remove('dragging');
-          chip.style.transition = '';
-          chip.style.transform = '';
+          chip.style.position = '';
+          chip.style.left = '';
+          chip.style.top = '';
+          chip.style.width = '';
+          chip.style.height = '';
+          chip.style.zIndex = '';
+          chip.style.pointerEvents = '';
           chip.style.boxShadow = '';
-          chip.style.opacity = '';
-          // Rebuild from unmodified userPresets: restores start order.
+          chip.style.borderColor = '';
+          chip.style.transform = '';
           renderChips();
         }
         dragging = false;
       };
 
+      const startDrag = () => {
+        if (dragging) return;
+        dragging = true;
+        startIndex = Array.prototype.indexOf.call(container.children, chip);
+
+        const base = chip.getBoundingClientRect();
+        grabOffsetX = pressX - base.left;
+        grabOffsetY = pressY - base.top;
+        chipW = base.width;
+        chipH = base.height;
+
+        ghost = makeGhost(chipW);
+        container.insertBefore(ghost, chip);
+        document.body.appendChild(chip);
+        cacheMids();
+
+        chip.classList.add('dragging');
+        chip.style.position = 'fixed';
+        chip.style.left = `${base.left}px`;
+        chip.style.top = `${base.top}px`;
+        chip.style.width = `${chipW}px`;
+        chip.style.height = `${chipH}px`;
+        chip.style.zIndex = '9999';
+        chip.style.pointerEvents = 'none';
+        chip.style.boxShadow = '0 6px 16px rgba(0, 210, 255, 0.45)';
+        chip.style.borderColor = '#00d2ff';
+        chip.style.transform = 'scale(1.08)';
+        chip.style.transition = 'transform 120ms cubic-bezier(.2,.9,.3,1.2)';
+        setTimeout(() => {
+          if (dragging) chip.style.transition = '';
+        }, 130);
+
+        lastX = pressX;
+        lastT = performance.now();
+      };
+
       chip.addEventListener('pointerdown', (e) => {
         if (e.button !== 0) return;
         pressX = e.clientX;
+        pressY = e.clientY;
         moved = false;
         dragging = false;
         cancelPress();
-        pressTimer = setTimeout(() => {
-          // Lift: pop to grabbed state, then drop the transition so drag
-          // tracking stays 1:1 with the pointer.
-          dragging = true;
-          startIndex = Array.prototype.indexOf.call(container.children, chip);
-          const base = chip.getBoundingClientRect();
-          baseLeft = base.left;
-          chipW = base.width;
-          chip.classList.add('dragging');
-          chip.style.transition = 'transform 120ms cubic-bezier(.2,.9,.3,1.2), opacity 120ms ease-out';
-          chip.style.transform = 'scale(1.05)';
-          chip.style.boxShadow = '0 4px 10px rgba(0, 210, 255, 0.35)';
-          chip.style.opacity = '0.85';
-          setTimeout(() => {
-            if (dragging) chip.style.transition = '';
-          }, 130);
-          const w = chipW || chip.getBoundingClientRect().width;
-          ghost = makeGhost(w);
-          cacheMids();
-          const base = chip.getBoundingClientRect();
-          baseLeft = base.left;
-          chipW = base.width;
-          lastX = e.clientX;
-          lastY = e.clientY;
-          lastT = performance.now();
-          // NOTE: no setPointerCapture — capture retargets hit-testing and
-          // breaks drop math; geometric midpoints need no capture.
-        }, 350);
-      });
 
-      chip.addEventListener('pointermove', (e) => {
-        if (e.buttons !== 1) return;
-        if (!dragging) {
-          if (Math.abs(e.clientX - pressX) > 8) {
-            moved = true;
-            cancelPress();
+        pressTimer = setTimeout(startDrag, 250);
+
+        const onWinMove = (e) => {
+          if (!dragging) {
+            if (Math.hypot(e.clientX - pressX, e.clientY - pressY) > 6) {
+              moved = true;
+              cancelPress();
+              startDrag();
+              queueFrame(e.clientX, e.clientY);
+            }
+            return;
           }
-          return;
-        }
-        e.preventDefault();
-        queueFrame(e.clientX, e.clientY);
-      });
+          e.preventDefault();
+          queueFrame(e.clientX, e.clientY);
+        };
 
-      const onUp = (e) => {
-        cancelPress();
-        if (dragging) {
-          chip.classList.remove('dragging');
-          chip.style.transform = '';
-          endDrag(true);
-          return;
-        }
-        // Plain click: save only when the pointer barely moved.
-        if (!moved && e.button === 0) {
-          if (!isRecording || isSaving) return;
-          const timeToSave = selectedTimestamp || currentRecordingTimecode;
-          commitMarker(timeToSave, tag);
-        } else {
-          chip.style.transform = '';
-        }
-      };
-      chip.addEventListener('pointerup', onUp);
-      chip.addEventListener('pointercancel', () => {
-        cancelPress();
-        if (dragging) endDrag(false);
+        const onWinUp = (e) => {
+          window.removeEventListener('pointermove', onWinMove);
+          window.removeEventListener('pointerup', onWinUp);
+          window.removeEventListener('pointercancel', onWinCancel);
+          cancelPress();
+          if (dragging) {
+            endDrag(true);
+            return;
+          }
+          // Plain quick click -> commit marker
+          if (!moved && e.button === 0) {
+            if (!isRecording || isSaving) return;
+            const timeToSave = selectedTimestamp || currentRecordingTimecode;
+            commitMarker(timeToSave, tag);
+          } else {
+            chip.style.transform = '';
+          }
+        };
+
+        const onWinCancel = () => {
+          window.removeEventListener('pointermove', onWinMove);
+          window.removeEventListener('pointerup', onWinUp);
+          window.removeEventListener('pointercancel', onWinCancel);
+          cancelPress();
+          if (dragging) endDrag(false);
+        };
+
+        window.addEventListener('pointermove', onWinMove);
+        window.addEventListener('pointerup', onWinUp);
+        window.addEventListener('pointercancel', onWinCancel);
       });
 
       chip.oncontextmenu = (e) => {
