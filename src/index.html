@@ -982,10 +982,10 @@
       const chip = document.createElement('div');
       chip.className = 'dock-chip';
       chip.textContent = tag;
-      chip.title = `Click: save "${tag}" | Hold 0.5s + drag: reorder | Right-click: delete tag`;
+      chip.title = `Click: save "${tag}" | Hold 0.35s + drag: reorder | Right-click: delete tag`;
 
       // Press-vs-hold disambiguation: quick click saves (existing
-      // behavior), >500ms hold enters horizontal reorder mode, release
+      // behavior), >350ms hold enters horizontal reorder mode, release
       // beyond 8px of movement never saves (no accidental markers).
       // Hit-testing is geometric (cached midpoints): elementFromPoint is
       // unreliable under pointer capture, so it is not used at all.
@@ -1002,6 +1002,8 @@
       let pendingX = 0;
       let pendingY = 0;
       let hasPending = false;
+      let baseLeft = 0;
+      let chipW = 0;
 
       const cancelPress = () => {
         clearTimeout(pressTimer);
@@ -1121,7 +1123,14 @@
         lastX = pendingX;
         lastT = now;
         const rot = Math.max(-8, Math.min(8, vx * 0.02));
-        const dx = pendingX - pressX;
+        // Clamp the chip inside the visible chips row so it can never
+        // roam freely across the page.
+        const row = document.getElementById('chipScrollRow');
+        let dx = pendingX - pressX;
+        if (row) {
+          const rr = row.getBoundingClientRect();
+          dx = Math.max(rr.left - baseLeft, Math.min(dx, rr.right - baseLeft - chipW));
+        }
         chip.style.transform = `translateX(${dx}px) scale(1.05) rotate(${rot.toFixed(2)}deg)`;
         const scrolled = autoScroll(pendingX);
         if (scrolled) cacheMids();
@@ -1216,6 +1225,9 @@
           // tracking stays 1:1 with the pointer.
           dragging = true;
           startIndex = Array.prototype.indexOf.call(container.children, chip);
+          const base = chip.getBoundingClientRect();
+          baseLeft = base.left;
+          chipW = base.width;
           chip.classList.add('dragging');
           chip.style.transition = 'transform 120ms cubic-bezier(.2,.9,.3,1.2), opacity 120ms ease-out';
           chip.style.transform = 'scale(1.05)';
@@ -1224,15 +1236,18 @@
           setTimeout(() => {
             if (dragging) chip.style.transition = '';
           }, 130);
-          const w = chip.getBoundingClientRect().width;
+          const w = chipW || chip.getBoundingClientRect().width;
           ghost = makeGhost(w);
           cacheMids();
+          const base = chip.getBoundingClientRect();
+          baseLeft = base.left;
+          chipW = base.width;
           lastX = e.clientX;
           lastY = e.clientY;
           lastT = performance.now();
           // NOTE: no setPointerCapture — capture retargets hit-testing and
           // breaks drop math; geometric midpoints need no capture.
-        }, 500);
+        }, 350);
       });
 
       chip.addEventListener('pointermove', (e) => {
