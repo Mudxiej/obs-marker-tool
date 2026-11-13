@@ -38,6 +38,7 @@ copy /Y "%~dp0index.html" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0server.py" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0marker_service.lua" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0run_silent.vbs" "%TARGET_DIR%\" >nul
+copy /Y "%~dp0stop_silent.vbs" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0run.bat" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0stop.bat" "%TARGET_DIR%\" >nul
 copy /Y "%~dp0uninstall.bat" "%TARGET_DIR%\" >nul
@@ -71,7 +72,8 @@ echo.
 echo 2. Add Custom Browser Dock:
 echo    - In OBS, go to: Docks -^> Custom Browser Docks...
 echo    - Dock Name: Marker Tool
-echo    - URL: http://127.0.0.1:8765/markers/
+echo    - URL: file:///%TARGET_DIR:\=/%/index.html
+echo           (or http://127.0.0.1:8765/markers/)
 echo    - Click Apply and dock the panel above or below your controls.
 echo.
 echo 3. Bind In-Game Hotkey:
