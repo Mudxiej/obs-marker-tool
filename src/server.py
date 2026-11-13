@@ -1180,10 +1180,15 @@ class RequestHandler(BaseHTTPRequestHandler):
     def end_headers(self):
         origin = self._origin()
         if origin and is_origin_allowed(origin):
-            self.send_header('Access-Control-Allow-Origin', origin)
+            # When loaded via file:/// Chromium CEF sends Origin: null.
+            # Wildcard '*' is required for null/file origins in Chromium CEF.
+            allow_origin = '*' if origin == 'null' else origin
+            self.send_header('Access-Control-Allow-Origin', allow_origin)
             self.send_header('Vary', 'Origin')
+        elif not origin:
+            self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.send_header('Pragma', 'no-cache')
         self.send_header('Expires', '0')

@@ -494,10 +494,11 @@
   let serverPort = (location.port || "8765").toString();
   // Pin apiBase to IPv4 127.0.0.1 literal so docks opened via localhost
   // never trigger RFC 6724 IPv6 [::1] connection hangs. Under file:///
-  // (detached testing) discoverDaemonPort() probes 8765-8770.
+  // (local file protocol) default immediately to 8765, while discoverDaemonPort()
+  // dynamically probes 8765-8770 with retry if bound to a fallback port.
   let apiBase = (location.protocol === "http:" || location.protocol === "https:")
     ? `http://127.0.0.1:${serverPort}`
-    : "";
+    : `http://127.0.0.1:8765`;
   let appVersion = "dev";
   let updateAvailable = false;
   let latestVersion = null;
@@ -531,8 +532,16 @@
     if (location.protocol !== "file:") return;
     const ports = [8765, 8766, 8767, 8768, 8769, 8770];
     let i = 0;
+    let attempts = 0;
     const tryNext = () => {
-      if (i >= ports.length) return;
+      if (i >= ports.length) {
+        if (attempts < 20) {
+          attempts++;
+          i = 0;
+          setTimeout(tryNext, 500);
+        }
+        return;
+      }
       const p = ports[i++];
       fetch(`http://127.0.0.1:${p}/api/status`)
         .then(res => res.json())
@@ -542,6 +551,7 @@
             serverPort = String((data && data.port) || p);
             updateFpsTooltip();
             pollServerSync();
+            loadPresetsFromServer();
           } else {
             tryNext();
           }
@@ -977,7 +987,13 @@
       .catch(() => {});
   }
 
+  let settleTimer = null;
+
   function renderChips() {
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
     const container = document.getElementById('chipContainer');
     container.innerHTML = '';
 
@@ -994,7 +1010,6 @@
       let grabOffsetY = 0;
       let moved = false;
       let dragging = false;
-      let startIndex = idx;
       let ghost = null;
       let mids = [];
       let rafId = 0;
@@ -1046,7 +1061,7 @@
       // FLIP-slide static chips around a DOM mutation (transform-only).
       const flipSlide = (mutate) => {
         const els = [];
-        container.querySelectorAll('.dock-chip').forEach(el => {
+        container.querySelectorAll('.dock-chip:not(.dragging)').forEach(el => {
           els.push([el, el.getBoundingClientRect().left]);
         });
         mutate();
@@ -1183,7 +1198,8 @@
             syncPresetsToServer();
           }
 
-          setTimeout(() => {
+          settleTimer = setTimeout(() => {
+            settleTimer = null;
             chip.style.transition = '';
             renderChips();
           }, 200);
@@ -1208,7 +1224,6 @@
       const startDrag = () => {
         if (dragging) return;
         dragging = true;
-        startIndex = Array.prototype.indexOf.call(container.children, chip);
 
         const base = chip.getBoundingClientRect();
         grabOffsetX = pressX - base.left;
@@ -1243,6 +1258,12 @@
 
       chip.addEventListener('pointerdown', (e) => {
         if (e.button !== 0) return;
+        if (settleTimer) {
+          clearTimeout(settleTimer);
+          settleTimer = null;
+          renderChips();
+          return;
+        }
         pressX = e.clientX;
         pressY = e.clientY;
         moved = false;

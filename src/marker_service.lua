@@ -40,10 +40,16 @@ local function read_saved_port()
     return nil
 end
 
+local function get_local_dock_url()
+    local win_dir = get_script_dir()
+    local file_path = string.gsub(win_dir .. "index.html", "\\", "/")
+    return "file:///" .. file_path
+end
+
 function script_description()
-    local port = read_saved_port() or 8765
+    local dock_url = get_local_dock_url()
     return "OBS Marker Tool - Zero-overhead recording marker engine for OBS Studio.\n\n" ..
-           "• Browser Dock: Paste http://127.0.0.1:" .. tostring(port) .. "/markers/ into Docks -> Custom Browser Docks...\n" ..
+           "• Browser Dock: Paste " .. dock_url .. " into Docks -> Custom Browser Docks...\n" ..
            "• GitHub: https://github.com/Mudxiej/obs-marker-tool"
 end
 
@@ -169,6 +175,13 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "export_json", true)
 end
 
+local function on_frontend_event(event)
+    if event == obs.OBS_FRONTEND_EVENT_EXIT then
+        local win_dir = get_script_dir()
+        os.execute('start "" wscript.exe "' .. win_dir .. 'stop_silent.vbs"')
+    end
+end
+
 function script_load(settings)
     local win_dir = get_script_dir()
 
@@ -176,6 +189,7 @@ function script_load(settings)
     -- zero console windows). Lua must not curl-probe here: every os.execute
     -- spawns a visible cmd.exe flash on Windows.
     os.execute('start "" wscript.exe "' .. win_dir .. 'run_silent.vbs"')
+    obs.obs_frontend_add_event_callback(on_frontend_event)
 
     -- Register global OBS hotkey: appears in Settings -> Hotkeys -> "Marker Tool: Freeze Timestamp"
     hotkey_id = obs.obs_hotkey_register_frontend("marker_tool.freeze", "Marker Tool: Freeze Timestamp", trigger_freeze)
@@ -213,7 +227,6 @@ function script_save(settings)
 end
 
 function script_unload()
-    local win_dir = get_script_dir()
-    -- Cleanly terminate server on port 8765
-    os.execute('cmd.exe /c "' .. win_dir .. 'stop.bat"')
+    -- Intentionally empty: daemon termination routes strictly through OBS_FRONTEND_EVENT_EXIT
+    -- to prevent dock ERR_CONNECTION_REFUSED when switching Scene Collections or Profiles.
 end
